@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 	"github.com/Fusl/go-resp"
+	"github.com/omavashia2005/emberdb/utils/kvstore"
 	"log"
 	"net"
 	"unsafe"
-	// "github.com/omavashia2005/emberdb/utils/kvstore"
 )
 
 func BytesToLower(b []byte) []byte {
@@ -30,7 +30,7 @@ func main() {
 	}
 
 	defer listener.Close()
-	// kv := kvstore.NewKVStore()
+	kv := kvstore.NewKVStore()
 
 	for {
 		conn, err := listener.Accept()
@@ -61,23 +61,52 @@ func main() {
 
 			cmd := bstring(BytesToLower(args[0]))
 			args = args[1:]
-			fmt.Print(args);
+
+			fmt.Println(args)
 
 			switch cmd {
 			case "ping":
 				rconn.WriteStatusString("PONG")
 			case "echo":
 				if len(args) == 0 {
-					rconn.WriteError(fmt.Errorf("wrong number of arguments for 'echo' command"))
+					rconn.WriteError(fmt.Errorf("wrong number of arguments for 'ECHO' command"))
 					continue
 				}
-				if len(args) == 1 {	
+				if len(args) == 1 {
 					// Write a bulk string response
 					rconn.WriteBytes(args[0])
 					continue
 				}
 
 				rconn.WriteArrayBytes(args)
+			case "set":
+				if len(args) != 2 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SET' command"))
+					continue
+				}
+
+				key := string(args[0])
+				val := string(args[1])
+
+				kv.Set(key, val)
+
+				rconn.WriteOK()
+			case "get":
+				if len(args) != 1 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'GET' command"))
+					continue
+				}
+
+				key := string(args[0])
+				val := kv.Get(key)
+
+				if val == "(nil)" {
+					rconn.WriteStatusString("No such key")
+					continue
+				}
+
+				rconn.WriteString(val)
+
 			default:
 				rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
 			}

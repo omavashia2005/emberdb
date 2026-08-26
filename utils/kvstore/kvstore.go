@@ -22,3 +22,26 @@ func NewKVStore() *KVStore {
 		connectedClients:       make(map[string]net.Conn),
 	}
 }
+
+
+func (kv *KVStore) Set (key, value string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.Strings[key] = value;
+}
+
+
+func (kv *KVStore) Get (key string) string{
+
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+
+	if val, ok := kv.Strings[key]; ok{
+		return val
+	}
+
+	return "(nil)"
+
+
+}
