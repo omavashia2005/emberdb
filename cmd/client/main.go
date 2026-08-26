@@ -3,13 +3,10 @@ package main
 import (
 	"bufio"
 	"fmt"
+	resp "github.com/Fusl/go-resp"
 	"net"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
-
-	resp "github.com/Fusl/go-resp"
 )
 
 func main() {
@@ -21,65 +18,38 @@ func main() {
 
 	rconn := resp.NewServer(conn)
 	defer rconn.Close()
+	scanner := bufio.NewScanner(os.Stdin)
 
-	// Ctrl-C / SIGTERM
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	fmt.Print("> ")
+	for scanner.Scan() {
+		line := scanner.Text()
+		line = strings.TrimSpace(line)
 
-	// Read stdin in a separate goroutine so main can also listen for Ctrl-C.
-	input := make(chan string)
-
-	go func() {
-		scanner := bufio.NewScanner(os.Stdin)
-
-		for scanner.Scan() {
-			input <- scanner.Text()
+		if line == "" {
+			continue
 		}
 
-		close(input)
-	}()
-
-	fmt.Println("Connected to EmberDB on 127.0.0.1:6739")
-
-	for {
-		fmt.Print("> ")
-
-		select {
-		case <-sig:
-			fmt.Println("\nbye")
+		if strings.EqualFold(line, "quit") {
 			return
-
-		case line, ok := <-input:
-			if !ok {
-				return
-			}
-
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-
-			if strings.EqualFold(line, "quit") {
-				return
-			}
-
-			args := strings.Fields(line)
-
-			if err := rconn.WriteArrayString(args); err != nil {
-				fmt.Println("write error:", err)
-				return
-			}
-
-			// For now: read raw RESP response.
-			buf := make([]byte, 4096)
-
-			n, err := conn.Read(buf)
-			if err != nil {
-				fmt.Println("read error:", err)
-				return
-			}
-
-			fmt.Printf("%s", buf[:n])
 		}
+
+		args := strings.Fields(line)
+
+		if err := rconn.WriteArrayString(args); err != nil {
+			fmt.Println("write error:", err)
+			return
+		}
+
+		// For now: read raw RESP response.
+		buf := make([]byte, 4096)
+
+		n, err := conn.Read(buf)
+		if err != nil {
+			fmt.Println("read error:", err)
+			return
+		}
+
+		fmt.Printf("%s", buf[:n])
+		fmt.Print("> ")
 	}
 }
