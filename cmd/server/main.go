@@ -68,7 +68,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			rconn.WriteArrayBytes(args)
 		case "set":
 			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SET' command"))
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SET' command"))
 				continue
 			}
 
@@ -80,7 +80,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			rconn.WriteOK()
 		case "get":
 			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'GET' command"))
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'GET' command"))
 				continue
 			}
 
@@ -94,6 +94,80 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			}
 
 			rconn.WriteString(val)
+		case "append":
+			if len(args) != 2 {
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'APPEND' command"))
+				continue
+			}
+
+			key := string(args[0])
+			valueToAppend := string(args[1])
+
+			kv.Append(key, valueToAppend)
+
+			rconn.WriteOK()
+
+		case "incr":
+			if len(args) != 1 {
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'INCR' command"))
+				continue
+			}
+
+			key := string(args[0])
+
+			err := kv.Incr(key)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			}
+
+			rconn.WriteOK()
+
+		case "incrby":
+			if len(args) != 2 {
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'INCRBY' command"))
+				continue
+			}
+
+			key := string(args[0])
+			incrByVal := string(args[1])
+
+			err := kv.IncrBy(key, incrByVal)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			}
+
+			rconn.WriteOK()
+
+		case "decr":
+			if len(args) != 1 {
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'DECR' command"))
+				continue
+			}
+
+			key := string(args[0])
+			err := kv.Decr(key)
+
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			}
+
+			rconn.WriteOK()
+
+		case "decrby":
+			if len(args) != 2 {
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'DECRBY' command"))
+				continue
+			}
+
+			key := string(args[0])
+			decrByVal := string(args[1])
+
+			err := kv.DecrBy(key, decrByVal)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			}
+
+			rconn.WriteOK()
 
 		default:
 			rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
