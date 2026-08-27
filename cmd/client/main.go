@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	resp "github.com/Fusl/go-resp"
+	"github.com/bytechan/resp3"
 )
 
 func main() {
@@ -21,6 +22,8 @@ func main() {
 
 	rconn := resp.NewServer(conn)
 	defer rconn.Close()
+
+	reader := resp3.NewReader(conn)
 
 	// Ctrl-C / SIGTERM
 	sig := make(chan os.Signal, 1)
@@ -43,16 +46,14 @@ func main() {
 
 	go func() {
 
-		buf := make([]byte, 4096)
-
 		for {
-			n, err := conn.Read(buf)
+			v, _, err := reader.ReadValue()
 			if err != nil {
 				fmt.Println("read error:", err)
 				return
 			}
 
-			output <- string(buf[:n])
+			output <- fmt.Sprint(v.SmartResult())
 		}
 	}()
 
@@ -87,7 +88,7 @@ func main() {
 				return
 			}
 		case message := <-output:
-			fmt.Printf("%s", message)
+			fmt.Printf("%s\n", message)
 		}
 
 	}

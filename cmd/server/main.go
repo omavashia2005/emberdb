@@ -34,7 +34,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 	rconn := resp.NewServer(conn)
 	defer rconn.Close()
 
-
 	if err := rconn.SetOptions(resp.ServerOptions{
 		MaxMultiBulkLength: resp.Pointer(1024),
 		MaxBulkLength:      resp.Pointer(65536),
@@ -204,32 +203,35 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 				continue
 			}
 
-			channel := string(args[0])
-			msg := string(args[1])
-
-			count := pubsub.Publish(channel, msg, ps)
-
-			rconn.WriteInt(count)
+			for i := range len(args) - 1 {
+				channel := string(args[i])
+				msg := string(args[i+1])
+				count := pubsub.Publish(channel, msg, ps)
+				rconn.WriteInt(count)
+			}
 
 		case "subscribe":
-			if len(args) == 2 {
+			if len(args) <= 1 {
 				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SUBSCRIBE' command"))
 				continue
 			}
-			channel := string(args[0])
 
-			ch := pubsub.Subscribe(channel, ps)
+			for i := range args {
 
-			go func() {
+				channel := string(args[i])
+				ch := pubsub.Subscribe(channel, ps)
 
-				for message := range ch {
-					fmt.Printf("Received message on channel %s: %s\n", channel, message)
-					rconn.WriteString(message)
-				}
+				go func() {
 
-			}()
+					for message := range ch {
+						fmt.Printf("Received message on channel %s: %s\n", channel, message)
+						rconn.WriteString(message)
+					}
 
-			rconn.WriteOK()
+				}()
+
+				rconn.WriteOK()
+			}
 
 		case "unsubscribe":
 			if len(args) == 1 {

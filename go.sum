@@ -1,2 +1,6 @@
 github.com/Fusl/go-resp v0.0.0-20250403034534-c4c34ae89024 h1:+f6BrPKWC98DoZIc+jzAiSLQxq+MalNhqmZTTHrQguI=
 github.com/Fusl/go-resp v0.0.0-20250403034534-c4c34ae89024/go.mod h1:Ks2wOluhFAnUU/+aK/dkEsMM0zWrhfr4dUtiRGCslNk=
+github.com/bytechan/resp3 v0.1.2 h1:VvS1Av2TiXnu15xTMGKZpEflRhyDxw7M/aTAl8mnnW0=
+github.com/bytechan/resp3 v0.1.2/go.mod h1:gIFzUqQzs5FZL/Iw45ycdOqPZJf6GOx49TmuAl/ZTHs=
+github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
+github.com/emirpasic/gods v1.18.1/go.mod h1:8tpGGwCnJ5H4r6BWwaV6OrWmMoPhUl5jm/FMNAnJvWQ=
