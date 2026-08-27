@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"fmt"
@@ -211,7 +211,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			}
 
 		case "subscribe":
-			if len(args) <= 1 {
+			if len(args) < 1 {
 				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SUBSCRIBE' command"))
 				continue
 			}
@@ -245,8 +245,8 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 	}
 
 }
-func main() {
-	listener, err := net.Listen("tcp", ":6739")
+func Run(port string) {
+	listener, err := net.Listen("tcp", port)
 	if err != nil {
 		panic(err)
 	}
@@ -266,3 +266,4 @@ func main() {
 	}
 
 }
+
