@@ -8,6 +8,7 @@ import (
 
 	"github.com/Fusl/go-resp"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
+	"github.com/omavashia2005/emberdb/utils/pubsub"
 )
 
 func BytesToLower(b []byte) []byte {
@@ -30,6 +31,8 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 
 	rconn := resp.NewServer(conn)
 	defer rconn.Close()
+
+	ps := pubsub.NewPubSub()
 
 	if err := rconn.SetOptions(resp.ServerOptions{
 		MaxMultiBulkLength: resp.Pointer(1024),
@@ -175,13 +178,13 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			}
 
 			for i := 0; i < len(args); i += 2 {
-				kv.Set(string(args[i]),string(args[i + 1]))
+				kv.Set(string(args[i]), string(args[i+1]))
 			}
 
 			rconn.WriteOK()
 
 		case "mget":
-			if len(args) == 0{
+			if len(args) == 0 {
 				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MGET' command"))
 				continue
 			}
@@ -193,6 +196,44 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			}
 
 			rconn.WriteArrayString(resp)
+
+		case "publish":
+			if len(args) == 3 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'PUBLISH' command"))
+				continue
+			}
+
+			channel := string(args[0])
+			msg := string(args[1])
+
+			count := pubsub.Publish(channel, msg, ps)
+
+			rconn.WriteInt(count)
+
+		case "subscribe":
+			if len(args) == 2 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SUBSCRIBE' command"))
+				continue
+			}
+			channel := string(args[0])
+
+			ch := pubsub.Subscribe(channel, ps)
+
+			go func() {
+
+				for message := range ch {
+					fmt.Printf("Received message on channel %s: %s\n", channel, message)
+				}
+
+			}()
+
+			rconn.WriteOK()
+
+		case "unsubscribe":
+			if len(args) == 1 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'UNSUBSCRIBE' command"))
+				continue
+			}
 
 		default:
 			rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
