@@ -26,13 +26,14 @@ func bstring(bs []byte) string {
 	return unsafe.String(p, len(bs))
 }
 
+var ps = pubsub.NewPubSub()
+
 func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 	defer conn.Close()
 
 	rconn := resp.NewServer(conn)
 	defer rconn.Close()
 
-	ps := pubsub.NewPubSub()
 
 	if err := rconn.SetOptions(resp.ServerOptions{
 		MaxMultiBulkLength: resp.Pointer(1024),
