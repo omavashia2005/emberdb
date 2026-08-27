@@ -20,7 +20,7 @@ func main() {
 	defer rconn.Close()
 	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Print("> ")
+	fmt.Print("ember> ")
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = strings.TrimSpace(line)
@@ -50,6 +50,6 @@ func main() {
 		}
 
 		fmt.Printf("%s", buf[:n])
-		fmt.Print("> ")
+		fmt.Print("ember> ")
 	}
 }

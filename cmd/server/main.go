@@ -168,6 +168,31 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 			}
 
 			rconn.WriteOK()
+		case "mset":
+			if len(args)%2 != 0 {
+				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'MSET' command"))
+				continue
+			}
+
+			for i := 0; i < len(args); i += 2 {
+				kv.Set(string(args[i]),string(args[i + 1]))
+			}
+
+			rconn.WriteOK()
+
+		case "mget":
+			if len(args) == 0{
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MGET' command"))
+				continue
+			}
+
+			var resp []string
+
+			for i := 0; i < len(args); i += 1 {
+				resp = append(resp, kv.Get(string(args[i])))
+			}
+
+			rconn.WriteArrayString(resp)
 
 		default:
 			rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
