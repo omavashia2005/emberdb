@@ -223,6 +223,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 
 				for message := range ch {
 					fmt.Printf("Received message on channel %s: %s\n", channel, message)
+					rconn.WriteString(message)
 				}
 
 			}()
