@@ -10,17 +10,17 @@ import (
 	"syscall"
 
 	"github.com/omavashia2005/emberdb/cmd/server"
+	// "github.com/omavashia2005/emberdb/utils/clusters"
 )
 
 var CLUSTER_NODES []*exec.Cmd
-var CLUSTER_PORTS = []string{"6739", "6380", "6381"}
+var CLUSTER_PORTS = []string{"6379", "6380", "6381"}
 
-func startCluser() error {
+func startCluster() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %s\n", err)
 	}
-
 
 	for _, port := range CLUSTER_PORTS {
 		cmd := exec.Command(exe, "__node", port)
@@ -52,10 +52,9 @@ func main() {
 
 	if len(os.Args) == 3 && os.Args[1] == "__node" {
 		port := os.Args[2]
-		server.Run(":" + port)
+		server.Run(":" + port, true)
 		return
 	}
-
 
 	cleanup := func() {
 		for _, node := range CLUSTER_NODES {
@@ -83,7 +82,7 @@ func main() {
 
 	for {
 
-		fmt.Print("ember-cli> ")
+		fmt.Print("ember-server> ")
 		select {
 
 		case <-sig:
@@ -94,6 +93,7 @@ func main() {
 		case line, ok := <-input:
 
 			if !ok {
+				cleanup()
 				return
 			}
 
@@ -103,6 +103,7 @@ func main() {
 			}
 
 			if strings.EqualFold(line, "quit") {
+				cleanup()
 				return
 			}
 
@@ -116,12 +117,12 @@ func main() {
 				switch args[1] {
 				case "start":
 					fmt.Println("ember running on port 6739")
-					go server.Run(":6739")
+					go server.Run(":6379", false)
 					continue
 
 				case "cluster-start":
-					err := startCluser()
-					if err != nil{
+					err := startCluster()
+					if err != nil {
 						panic(err)
 					}
 					continue
@@ -139,7 +140,7 @@ func main() {
 
 					port = ":" + port
 
-					go server.Run(port)
+					go server.Run(port, false)
 					continue
 				default:
 					fmt.Printf("No such option%s\n", args[1])

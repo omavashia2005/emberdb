@@ -7,4 +7,7 @@ require (
 	github.com/bytechan/resp3 v0.1.2
 )
 
-require github.com/emirpasic/gods v1.18.1 // indirect
+require (
+	github.com/emirpasic/gods v1.18.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+)

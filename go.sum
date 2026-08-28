@@ -4,3 +4,5 @@ github.com/bytechan/resp3 v0.1.2 h1:VvS1Av2TiXnu15xTMGKZpEflRhyDxw7M/aTAl8mnnW0=
 github.com/bytechan/resp3 v0.1.2/go.mod h1:gIFzUqQzs5FZL/Iw45ycdOqPZJf6GOx49TmuAl/ZTHs=
 github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
 github.com/emirpasic/gods v1.18.1/go.mod h1:8tpGGwCnJ5H4r6BWwaV6OrWmMoPhUl5jm/FMNAnJvWQ=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=

@@ -7,6 +7,7 @@ import (
 	"unsafe"
 
 	"github.com/Fusl/go-resp"
+	"github.com/omavashia2005/emberdb/utils/clusters"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
 	"github.com/omavashia2005/emberdb/utils/pubsub"
 )
@@ -28,7 +29,7 @@ func bstring(bs []byte) string {
 
 var ps = pubsub.NewPubSub()
 
-func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
+func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, clusterState *clusters.ClusterState) {
 	defer conn.Close()
 
 	rconn := resp.NewServer(conn)
@@ -56,7 +57,15 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 
 		switch cmd {
 		case "ping":
-			rconn.WriteStatusString("PONG")
+			if clusterEnabled {
+
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ID))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ClientPort))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ClusterBusPort))
+
+			} else {
+				rconn.WriteStatusString("PONG")
+			}
 		case "echo":
 			if len(args) == 0 {
 				rconn.WriteError(fmt.Errorf("wrong number of arguments for 'ECHO' command"))
@@ -77,6 +86,23 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 
 			key := string(args[0])
 			val := string(args[1])
+
+			if clusterEnabled {
+				// hash the key
+				// calculate slot
+				// MOVE or execute
+
+				/*
+					Each node needs:
+						* Slots it owns
+						* Which nodes own which slots
+				*/
+
+				clusters.GetNodeFromHash(key, clusterState)
+
+			} else {
+				kv.Set(key, val)
+			}
 
 			kv.Set(key, val)
 
@@ -245,7 +271,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore) {
 	}
 
 }
-func Run(port string) {
+func Run(port string, clusterEnabled bool) {
 	listener, err := net.Listen("tcp", port)
 	if err != nil {
 		panic(err)
@@ -253,6 +279,14 @@ func Run(port string) {
 
 	defer listener.Close()
 	kv := kvstore.NewKVStore()
+
+	clusterState := &clusters.ClusterState{
+		Nodes: make(map[string]*clusters.ClusterNode),
+	}
+
+	initNode := clusters.NewNode(port, clusterState)
+	clusterState.Nodes[initNode.ID] = initNode
+	clusterState.Self = initNode
 
 	for {
 		conn, err := listener.Accept()
@@ -262,8 +296,7 @@ func Run(port string) {
 
 		log.Printf("opened connection from %s", conn.RemoteAddr())
 
-		go handleConnection(conn, kv)
+		go handleConnection(conn, kv, clusterEnabled, clusterState)
 	}
 
 }
-
