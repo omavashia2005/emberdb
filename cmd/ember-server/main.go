@@ -45,7 +45,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 	for {
 		args, err := rconn.Next()
-		fmt.Printf("%s\n", args)
+
 		if err != nil {
 			rconn.CloseWithError(err)
 			log.Printf("closed connection from %s during read: %v", conn.RemoteAddr(), err)
@@ -54,6 +54,11 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 		cmd := bstring(BytesToLower(args[0]))
 		args = args[1:]
+
+		fmt.Printf("%s ", cmd)
+		for i := range len(args) {
+			fmt.Printf("%s\n", args[i])
+		}
 
 		switch cmd {
 		case "ping":
@@ -87,22 +92,22 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 			key := string(args[0])
 			val := string(args[1])
 
-			if clusterEnabled {
-				// hash the key
-				// calculate slot
-				// MOVE or execute
-
-				/*
-					Each node needs:
-						* Slots it owns
-						* Which nodes own which slots
-				*/
-
-				clusters.GetNodeFromHash(key, clusterState)
-
-			} else {
-				kv.Set(key, val)
-			}
+			// if clusterEnabled {
+			// 	// hash the key
+			// 	// calculate slot
+			// 	// MOVE or execute
+			//
+			// 	/*
+			// 		Each node needs:
+			// 			* Slots it owns
+			// 			* Which nodes own which slots
+			// 	*/
+			//
+			// 	clusters.GetNodeFromHash(key, clusterState)
+			//
+			// } else {
+			// 	kv.Set(key, val)
+			// }
 
 			kv.Set(key, val)
 
@@ -115,7 +120,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 			key := string(args[0])
 			val := kv.Get(key)
-			fmt.Printf("%q\n", val)
 
 			if val == "(nil)" {
 				rconn.WriteStatusString("No such key")

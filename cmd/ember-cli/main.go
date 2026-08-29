@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/google/shlex"
 	"net"
 	"os"
 	"os/signal"
@@ -61,7 +62,7 @@ func main() {
 			var node cliNode
 			addr := addrs[i]
 			host, port, err := net.SplitHostPort(addr)
-			
+
 			fmt.Println(host)
 			fmt.Println(port)
 
@@ -74,7 +75,6 @@ func main() {
 
 			tcp.host = host
 			tcp.port = port
-
 
 			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 
@@ -93,7 +93,6 @@ func main() {
 
 			fmt.Printf("Successfully connected to %s\n", addr)
 		}
-
 
 		// loop over nodes and assign slots. these slots exist only in CLI-side state, so they need to be permeated to the server processes themselves
 
@@ -185,7 +184,11 @@ func main() {
 				return
 			}
 
-			args := strings.Fields(line)
+			args, err := shlex.Split(line)
+			if err != nil {
+				fmt.Println("parse error:", err)
+				continue
+			}
 
 			if err := rconn.WriteArrayString(args); err != nil {
 				fmt.Println("write error:", err)
