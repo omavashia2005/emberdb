@@ -265,6 +265,33 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 				continue
 			}
 
+		case "cluster":
+			if len(args) < 1 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER' command"))
+				continue
+			}
+
+			switch string(args[1]) {
+
+			case "ADDSLOTS":
+				if len(args) != 4 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER ADDSLOTS' command"))
+					continue
+				}
+
+				// slotStart := strings(args[2])
+				// slotEnd := strings(args[3])
+
+				fmt.Printf("Adding slots to node on port %s\n", clusterState.Self.ClientPort)
+
+				rconn.WriteOK()
+
+			default:
+
+				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))
+				continue
+			}
+
 		default:
 			rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
 		}
