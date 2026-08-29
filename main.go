@@ -9,7 +9,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/omavashia2005/emberdb/cmd/server"
+	server "github.com/omavashia2005/emberdb/cmd/ember-server"
 	// "github.com/omavashia2005/emberdb/utils/clusters"
 )
 

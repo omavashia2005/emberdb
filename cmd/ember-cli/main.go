@@ -14,6 +14,25 @@ import (
 )
 
 func main() {
+
+	if len(os.Args) > 1 && os.Args[1] == "--cluster-create"{
+
+		var ports []string
+
+		if len(os.Args) == 2{
+			fmt.Println("No ports mentioned\n")
+			return
+		}
+
+		for i := 2; i < len(os.Args); i++{
+			ports = append(ports, os.Args[i])
+		}
+
+
+		fmt.Println(ports)
+		return
+	}
+
 	conn, err := net.Dial("tcp", "127.0.0.1:6379")
 	if err != nil {
 		panic(err)
