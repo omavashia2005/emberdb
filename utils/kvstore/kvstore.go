@@ -6,22 +6,23 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
 )
 
 type KVStore struct {
-	Strings                map[string]string
-	Expirations            map[string]time.Time
-	mu                     sync.RWMutex
-	totalCommandsProcessed int
-	connectedClients       map[string]net.Conn
+	Strings           map[string]string
+	Expirations       map[string]time.Time
+	mu                sync.RWMutex
+	CommandsProcessed int
+	Clients           map[string]net.Conn
 }
 
 func NewKVStore() *KVStore {
 	return &KVStore{
-		Strings:                make(map[string]string),
-		Expirations:            make(map[string]time.Time),
-		totalCommandsProcessed: 0,
-		connectedClients:       make(map[string]net.Conn),
+		Strings:           make(map[string]string),
+		Expirations:       make(map[string]time.Time),
+		CommandsProcessed: 0,
+		Clients:           make(map[string]net.Conn),
 	}
 }
 
@@ -143,3 +144,12 @@ func (kv *KVStore) DecrBy(key, decrByVal string) error {
 
 	return fmt.Errorf("ERR No such key found")
 }
+
+func (kv *KVStore) FlushAll() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.Strings = make(map[string]string)
+
+}
+

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 	"unsafe"
 
 	"github.com/Fusl/go-resp"
@@ -28,6 +29,7 @@ func bstring(bs []byte) string {
 }
 
 var ps = pubsub.NewPubSub()
+var startTime = time.Now()
 
 func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, clusterState *clusters.ClusterState) {
 	defer conn.Close()
@@ -42,6 +44,8 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 	}); err != nil {
 		rconn.CloseWithError(err)
 	}
+
+	kv.Clients[conn.RemoteAddr().String()] = conn
 
 	for {
 		args, err := rconn.Next()
@@ -61,6 +65,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 		}
 
 		switch cmd {
+		case "flushall":
+			kv.FlushAll()
+			rconn.WriteOK()
+
 		case "ping":
 			if clusterEnabled {
 
