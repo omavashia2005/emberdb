@@ -3,13 +3,16 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/google/shlex"
+	"math"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/google/shlex"
 
 	resp "github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
@@ -32,92 +35,13 @@ type cliNode struct {
 	port       string
 	busPort    string
 	dirty      int
-	slots      [CLUSTER_CLI_SLOTS][]uint8
+	slots      [CLUSTER_CLI_SLOTS]uint8
 	slotsCount int
 	conn       net.Conn
 }
 
-func main() {
-
-	if len(os.Args) > 1 && os.Args[1] == "--create-cluster" {
-
-		var addrs []string
-
-		if len(os.Args) == 2 {
-			fmt.Println("No ports mentioned")
-			return
-		}
-
-		for i := 2; i < len(os.Args); i++ {
-			addrs = append(addrs, os.Args[i])
-		}
-
-		// try connecting to each port (check if they exist)
-		// if yes to all N, proceed to cluster methods to create in-memory representation of these nodes
-
-		var cliNodeArray []cliNode
-
-		for i := range len(addrs) {
-
-			var node cliNode
-			addr := addrs[i]
-			host, port, err := net.SplitHostPort(addr)
-
-			fmt.Println(host)
-			fmt.Println(port)
-
-			if err != nil {
-				fmt.Printf("Error resolving port or host, %s\n", err)
-				return
-			}
-
-			var tcp tcp
-
-			tcp.host = host
-			tcp.port = port
-
-			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-
-			if err != nil {
-				fmt.Printf("Error connecting to %s\n", addr)
-				return
-			}
-
-			defer conn.Close()
-
-			tcp.sourceAddr = addr
-			node.ctx.TCP = &tcp
-			node.conn = conn
-
-			cliNodeArray = append(cliNodeArray, node)
-
-			fmt.Printf("Successfully connected to %s\n", addr)
-		}
-
-		// loop over nodes and assign slots. these slots exist only in CLI-side state, so they need to be permeated to the server processes themselves
-
-		// to permeate these, implement another client-side command named CLUSTER ADDSLOTS and send appropriate commands to required nodes
-
-		/*
-
-			parse supplied node addresses
-			    ↓
-			connect to every node
-			    ↓
-			validate all of them BEFORE mutating any
-			    ↓
-			build temporary CLI-side node representations
-			    ↓
-			compute slot allocation
-			    ↓
-			send CLUSTER ADDSLOTS-style commands to each server
-
-		*/
-
-		return
-	}
-
-	conn, err := net.Dial("tcp", "127.0.0.1:6379")
+func connect(port int) {
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		panic(err)
 	}
@@ -160,7 +84,7 @@ func main() {
 		}
 	}()
 
-	fmt.Println("Connected to EmberDB on 127.0.0.1:6739")
+	fmt.Printf("Connected to EmberDB on 127.0.0.1:%d \n", port)
 
 	for {
 		fmt.Print("> ")
@@ -198,5 +122,130 @@ func main() {
 			fmt.Printf("%s\n", message)
 		}
 
+	}
+}
+
+func main() {
+
+	if len(os.Args) == 1 {
+		connect(6379)
+	}
+
+	switch os.Args[1] {
+
+	case "--create-cluster":
+
+		var addrs []string
+
+		if len(os.Args) == 2 {
+			fmt.Println("No ports mentioned")
+			return
+		}
+
+		for i := 2; i < len(os.Args); i++ {
+			addrs = append(addrs, os.Args[i])
+		}
+
+		// try connecting to each port (check if they exist)
+		// if yes to all N, proceed to cluster methods to create in-memory representation of these nodes
+
+		var cliNodeArray []*cliNode
+
+		for i := range len(addrs) {
+
+			var node cliNode
+
+			addr := addrs[i]
+			host, port, err := net.SplitHostPort(addr)
+
+			if err != nil {
+				fmt.Printf("Error resolving port or host, %s\n", err)
+				return
+			}
+
+			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+
+			if err != nil {
+				fmt.Printf("Error connecting to %s\n", addr)
+				return
+			}
+
+			defer conn.Close()
+
+			var tcp tcp
+			tcp.host = host
+			tcp.port = port
+			tcp.sourceAddr = addr
+
+			node.ctx.TCP = &tcp
+			node.conn = conn
+
+			cliNodeArray = append(cliNodeArray, &node)
+
+			fmt.Printf("Successfully connected to %s\n", addr)
+		}
+
+		slotsPerNode := CLUSTER_CLI_SLOTS / float64(len(cliNodeArray))
+		var first int64 = 0
+		var cursor float64 = 0.0
+
+		// loop over nodes and assign slots. these slots exist only in CLI-side state, so they need to be permeated to the server processes themselves
+		for i := range len(cliNodeArray) {
+			curNode := cliNodeArray[i]
+
+			var last int64 = int64(math.Round(cursor + slotsPerNode - 1))
+
+			if last > CLUSTER_CLI_SLOTS || i == len(cliNodeArray)-1 {
+				last = CLUSTER_CLI_SLOTS - 1
+			}
+			if last < first {
+				last = first
+			}
+
+			fmt.Printf("Master[%d] -> Slots %d - %d\n", i, first, last)
+
+			curNode.slotsCount = 0
+			for j := first; j <= last; j++ {
+				curNode.slots[j] = 1
+				curNode.slotsCount += 1
+			}
+
+			curNode.dirty = 1
+			first = last + 1
+			cursor += slotsPerNode
+		}
+
+		// to permeate these, implement another client-side command named CLUSTER ADDSLOTS and send appropriate commands to required nodes
+
+		/*
+
+			parse supplied node addresses
+			↓
+			connect to every node
+			↓
+			validate all of them BEFORE mutating any
+			↓
+			build temporary CLI-side node representations
+			↓
+			compute slot allocation
+			↓
+			send CLUSTER ADDSLOTS-style commands to each server
+
+		*/
+
+	case "--port":
+		if len(os.Args) != 3 {
+			fmt.Println("No port mentioned, invalid command")
+			return
+		}
+
+		port, err := strconv.Atoi(os.Args[2])
+		if err != nil {
+			return
+		}
+
+		connect(port)
+
+	default:
 	}
 }
