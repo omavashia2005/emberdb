@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -58,11 +59,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 		cmd := bstring(BytesToLower(args[0]))
 		args = args[1:]
-
-		fmt.Printf("%s ", cmd)
-		for i := range len(args) {
-			fmt.Printf("%s\n", args[i])
-		}
 
 		switch cmd {
 		case "flushall":
@@ -278,28 +274,46 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 			}
 
 		case "cluster":
+			if !clusterEnabled {
+				rconn.WriteError(fmt.Errorf("Clustering is not enabled"))
+				continue
+			}
+
 			if len(args) < 1 {
 				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER' command"))
 				continue
 			}
 
-			switch string(args[1]) {
+			switch string(args[0]) {
 
-			case "ADDSLOTS":
-				if len(args) != 4 {
-					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER ADDSLOTS' command"))
+			case "ADDSLOTSRANGE":
+				if len(args) != 3 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER ADDSLOTSRANGE' command"))
 					continue
 				}
 
-				// slotStart := strings(args[2])
-				// slotEnd := strings(args[3])
+				slotStart, err := strconv.Atoi(string(args[1]))
+				if err != nil {
+					panic(err)
+				}
+				slotEnd, err := strconv.Atoi(string(args[2]))
+				if err != nil {
+					panic(err)
+				}
 
-				fmt.Printf("Adding slots to node on port %s\n", clusterState.Self.ClientPort)
+				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %s\n", slotStart, slotEnd, clusterState.Self.ClientPort)
+
+				clusterState.Self.NumSlots = 0
+				for slot := slotStart; slot <= slotEnd; slot++ {
+					word := slot / 64
+					bit := slot % 64
+					clusterState.Self.OwnedSlots[word] |= uint64(1) << bit
+					clusterState.Self.NumSlots++
+				}
 
 				rconn.WriteOK()
 
 			default:
-
 				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))
 				continue
 			}

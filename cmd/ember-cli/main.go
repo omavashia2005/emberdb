@@ -125,6 +125,19 @@ func connect(port int) {
 	}
 }
 
+/*
+parse supplied node addresses
+↓
+connect to every node
+↓
+validate all of them BEFORE mutating any
+↓
+build temporary CLI-side node representations
+↓
+compute slot allocation
+↓
+send CLUSTER ADDSLOTS-style commands to each server
+*/
 func main() {
 
 	if len(os.Args) == 1 {
@@ -207,7 +220,7 @@ func main() {
 			curNode.slotsCount = 0
 			for j := first; j <= last; j++ {
 				curNode.slots[j] = 1
-				curNode.slotsCount += 1
+				curNode.slotsCount++
 			}
 
 			curNode.dirty = 1
@@ -215,23 +228,60 @@ func main() {
 			cursor += slotsPerNode
 		}
 
-		// to permeate these, implement another client-side command named CLUSTER ADDSLOTS and send appropriate commands to required nodes
+		first = 0
+		cursor = 0.0
+		for i := range len(cliNodeArray) {
 
-		/*
+			curNode := cliNodeArray[i]
+			if curNode.dirty != 1 {
+				continue
+			}
 
-			parse supplied node addresses
-			↓
-			connect to every node
-			↓
-			validate all of them BEFORE mutating any
-			↓
-			build temporary CLI-side node representations
-			↓
-			compute slot allocation
-			↓
-			send CLUSTER ADDSLOTS-style commands to each server
+			var last int64 = int64(math.Round(cursor + slotsPerNode - 1))
 
-		*/
+			if last > CLUSTER_CLI_SLOTS || i == len(cliNodeArray)-1 {
+				last = CLUSTER_CLI_SLOTS - 1
+			}
+			if last < first {
+				last = first
+			}
+
+			rconn := resp.NewServer(curNode.conn)
+			reader := resp3.NewReader(curNode.conn)
+
+			rconn.WriteArrayString([]string{
+				"CLUSTER",
+				"ADDSLOTSRANGE",
+				strconv.Itoa(int(first)),
+				strconv.Itoa(int(last)),
+			})
+
+			v, _, err := reader.ReadValue()
+			if err != nil {
+				panic(err)
+			}
+
+			result := v.SmartResult()
+
+			switch r := result.(type) {
+			case string:
+				if r == "OK" {
+					curNode.dirty = 0
+					fmt.Printf("Node %s configured successfully\n", curNode.ctx.TCP.sourceAddr)
+				} else {
+					fmt.Printf("unexpected response: %s\n", r)
+				}
+			case error:
+				fmt.Printf("server rejected command: %v\n", r)
+
+			default:
+				fmt.Printf("unexpected response: %#v\n", r)
+
+			}
+
+			first = last + 1
+			cursor += slotsPerNode
+		}
 
 	case "--port":
 		if len(os.Args) != 3 {
