@@ -70,7 +70,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ID))
 				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ClientPort))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ClusterBusPort))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", clusterState.Self.ClusterBusPort))
 
 			} else {
 				rconn.WriteStatusString("PONG")
@@ -313,6 +313,24 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 				rconn.WriteOK()
 
+			case "MEET":
+				if len(args) != 2 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MEET' command"))
+					continue
+				}
+
+				senderHost := string(args[1])
+				senderPort, err := strconv.Atoi(string(args[2]))
+				if err != nil {
+					panic(err)
+				}
+
+				if err := clusters.ClusterStartHandshake(senderHost, senderPort, clusterState); err != nil {
+					panic(err)
+				}
+
+				rconn.WriteOK()
+
 			default:
 				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))
 				continue
@@ -340,6 +358,20 @@ func Run(port string, clusterEnabled bool) {
 	initNode := clusters.NewNode(port, clusterState)
 	clusterState.Nodes[initNode.ID] = initNode
 	clusterState.Self = initNode
+
+
+	if clusterEnabled {
+		go func() {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			iterations := 0
+
+			for range ticker.C {
+				clusters.ClusterCron(clusterState, iterations)
+				iterations++
+			}
+		}()
+	}
 
 	for {
 		conn, err := listener.Accept()

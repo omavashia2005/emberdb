@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/shlex"
+	"github.com/omavashia2005/emberdb/utils/clusters"
 
 	resp "github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
@@ -125,19 +126,6 @@ func connect(port int) {
 	}
 }
 
-/*
-parse supplied node addresses
-↓
-connect to every node
-↓
-validate all of them BEFORE mutating any
-↓
-build temporary CLI-side node representations
-↓
-compute slot allocation
-↓
-send CLUSTER ADDSLOTS-style commands to each server
-*/
 func main() {
 
 	if len(os.Args) == 1 {
@@ -146,6 +134,19 @@ func main() {
 
 	switch os.Args[1] {
 
+	/*
+		parse supplied node addresses
+		↓
+		connect to every node
+		↓
+		validate all of them BEFORE mutating any
+		↓
+		build temporary CLI-side node representations
+		↓
+		compute slot allocation
+		↓
+		send CLUSTER ADDSLOTS-style commands to each server
+	*/
 	case "--create-cluster":
 
 		var addrs []string
@@ -159,9 +160,12 @@ func main() {
 			addrs = append(addrs, os.Args[i])
 		}
 
+		if len(addrs) < 3 {
+			panic(fmt.Errorf("At least 3 nodes needed to create cluster"))
+		}
+
 		// try connecting to each port (check if they exist)
 		// if yes to all N, proceed to cluster methods to create in-memory representation of these nodes
-
 		var cliNodeArray []*cliNode
 
 		for i := range len(addrs) {
@@ -281,6 +285,23 @@ func main() {
 
 			first = last + 1
 			cursor += slotsPerNode
+		}
+
+		bootstrapAddr := addrs[0]
+		bootstrapHost, bootstrapPort, err := net.SplitHostPort(bootstrapAddr)
+		if err != nil {
+			panic(err)
+		}
+
+		for i := 1; i < len(addrs); i++ {
+			targetConn := cliNodeArray[i].conn
+
+			bPort, err := strconv.Atoi(bootstrapPort)
+			if err != nil {
+				panic(err)
+			}
+
+			clusters.ClusterMeet(targetConn, bPort, bootstrapHost) // 7001, 7000
 		}
 
 	case "--port":
