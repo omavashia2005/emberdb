@@ -1,12 +1,17 @@
 package clusters
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
+	"math/bits"
 	"math/rand/v2"
 	"net"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Fusl/go-resp"
@@ -40,7 +45,8 @@ const (
 		40 + // sender
 		2 + // cport
 		2 + // flags
-		2 // State
+		2 + // State
+		SLOT_WORDS*8 // slots bitmap
 
 )
 
@@ -70,6 +76,7 @@ type ClusterState struct {
 	Host  string
 	Slots [CLUSTER_SLOTS]*ClusterNode // Global array for slot ownership
 	State int
+	Mu    sync.RWMutex
 }
 
 type clusterLink struct {
@@ -81,39 +88,36 @@ type clusterLink struct {
 }
 
 type clusterMsg struct {
-	Sig    [4]byte                 // protocol signature ("RCmb")
-	Type   uint16                  // message type
-	port   uint16                  // sender TCP port
-	totLen uint32                  // total message length
-	count  uint16                  // gossip count
-	sender string                  // sender node ID
-	cport  uint16                  // sender cluster bus port
-	flags  uint16                  // sender node flags
-	State  int                     // sender's cluster state
+	// message metadata
+	Sig    [4]byte // protocol signature ("RCmb")
+	Type   uint16  // message type
+	totLen uint32  // total message length
+	count  uint16  // gossip count
+
+	// sender information
+	port   uint16 // sender TCP port
+	sender string // sender node ID
+	cport  uint16 // sender cluster bus port
+	flags  uint16 // sender node flags
+	State  int    // sender's cluster state
+
+	slots [SLOT_WORDS]uint64
+
 	Gossip []*clusterMsgDataGossip // sender's view of other nodes
 }
 
 type clusterMsgDataGossip struct {
 	nodeName     string // gossiped node ID
-	pingSent     uint32 // last PING sent
-	pongReceived uint32 // last PONG received
 	cport        uint16 // gossiped node cluster bus port
 	port         uint16 // gossiped node TCP port
 	flags        uint16 // gossiped node flags
+	pingSent     uint32 // last PING sent
+	pongReceived uint32 // last PONG received
 }
 
 var serverState *ClusterState
 
-/*
-TODO:
-A. Static slotting + MOVED
-B. Rebalance calculation
-C. Migration state machine
-D. Cluster-bus transport
-E. Cluster-state synchronization over bus
-*/
-
-func NewNode(clientPort string, host string, state *ClusterState) *ClusterNode {
+func NewNode(clientPort string, host string) *ClusterNode {
 	client, err := strconv.Atoi(clientPort)
 	if err != nil {
 		panic(fmt.Errorf("[ERROR] %e", err))
@@ -130,18 +134,6 @@ func NewNode(clientPort string, host string, state *ClusterState) *ClusterNode {
 	}
 }
 
-// func RebalanceSlots() {
-//
-// }
-//
-// func GetNodeFromHash(key string, state *ClusterState) {
-// 	//	hash key
-// 	// 	compute slot
-// 	//	make it match self. if not matching, return MOVED
-//
-// 	fmt.Println("TODO!")
-// }
-
 func writeFull(conn net.Conn, buf []byte) error {
 	for len(buf) > 0 {
 		n, err := conn.Write(buf)
@@ -156,11 +148,153 @@ func writeFull(conn net.Conn, buf []byte) error {
 }
 func clusterReadLoop(link *clusterLink) {
 
+	for {
+		prefix := make([]byte, 8)
+
+		_, err := io.ReadFull(link.connection, prefix)
+		if err != nil {
+			return
+		}
+
+		if string(prefix[:4]) != "RCmb" {
+			return
+		}
+
+		totLen := binary.BigEndian.Uint32(prefix[4:8])
+		buf := make([]byte, int(totLen))
+
+		copy(buf[:8], prefix)
+
+		_, err = io.ReadFull(link.connection, buf[8:])
+		if err != nil {
+			return
+		}
+
+		msg, err := decodeClusterMsg(buf)
+
+		clusterProcessMsg(link, msg)
+
+	}
+}
+
+func countSlots(slots [SLOT_WORDS]uint64) int {
+	count := 0
+
+	for _, word := range slots {
+		count += bits.OnesCount64(word)
+	}
+
+	return count
+}
+
+func clusterProcessGossip(msg *clusterMsg) {
+	for _, gossip := range msg.Gossip {
+		// Don't learn ourselves through gossip.
+		if gossip.nodeName == serverState.Self.Name {
+			continue
+		}
+
+		node, exists := serverState.Nodes[gossip.nodeName]
+
+		if !exists {
+			node = &ClusterNode{
+				Name:           gossip.nodeName,
+				ClientPort:     int(gossip.port),
+				ClusterBusPort: int(gossip.cport),
+				flags:          int(gossip.flags),
+			}
+
+			serverState.Nodes[node.Name] = node
+			continue
+		}
+
+		// Refresh our existing view of this node.
+		node.ClientPort = int(gossip.port)
+		node.ClusterBusPort = int(gossip.cport)
+		node.flags = int(gossip.flags)
+	}
+}
+
+// using the gossip, update serverState
+// send PONG via clusterSendPing()
+func clusterProcessMsg(link *clusterLink, msg *clusterMsg) {
+
+	fmt.Printf(
+		"[GOSSIP] receiver=%s sender=%s gossipCount=%d\n",
+		serverState.Self.Name,
+		msg.sender,
+		len(msg.Gossip),
+	)
+
+	for _, gossip := range msg.Gossip {
+		fmt.Printf(
+			"[GOSSIP] learned node=%s port=%d cport=%d flags=%d\n",
+			gossip.nodeName,
+			gossip.port,
+			gossip.cport,
+			gossip.flags,
+		)
+	}
+
+	serverState.Mu.Lock()
+	if link.node != nil {
+		if strings.HasPrefix(link.node.Name, "temp_") {
+			delete(serverState.Nodes, link.node.Name)
+
+			link.node.Name = msg.sender
+			link.node.ClientPort = int(msg.port)
+			link.node.ClusterBusPort = int(msg.cport)
+			link.node.flags = int(msg.flags)
+		}
+	} else {
+		node := &ClusterNode{
+			Name:           msg.sender,
+			ClientPort:     int(msg.port),
+			ClusterBusPort: int(msg.cport),
+			flags:          int(msg.flags),
+		}
+
+		link.node = node
+	}
+
+	link.node.NumSlots = countSlots(msg.slots)
+	serverState.Nodes[link.node.Name] = link.node
+
+	clusterProcessGossip(msg)
+
+	serverState.Mu.Unlock()
+
+	switch msg.Type {
+	case CLUSTERMSG_TYPE_PING:
+		clusterSendPing(link, CLUSTERMSG_TYPE_PONG)
+	case CLUSTERMSG_TYPE_PONG:
+		if link.node != nil {
+			link.node.pongReceived = time.Now()
+			link.node.pingSent = time.Time{}
+		}
+	}
+
+	fmt.Printf("[STATE] %s knows:\n", serverState.Self.Name)
+
+	for name, node := range serverState.Nodes {
+		fmt.Printf(
+			"  %s port=%d cport=%d\n",
+			name,
+			node.ClientPort,
+			node.ClusterBusPort,
+		)
+	}
+
 }
 
 func clusterWriteLoop(link *clusterLink) {
+	// clusterWriteLoop
 	for buf := range link.send {
+		fmt.Printf("[TRACE] writer sending %d bytes to %s\n",
+			len(buf), link.connection.RemoteAddr())
+
 		if err := writeFull(link.connection, buf); err != nil {
+			fmt.Printf("[TRACE] write failed: %v\n", err)
 			return
 		}
 	}
@@ -188,7 +322,7 @@ func CreateClusterLink(conn net.Conn, node *ClusterNode, inbound bool) *clusterL
 	return link
 }
 
-func ClusterStartHandshake(senderHost string, senderPort int, state *ClusterState) error {
+func ClusterStartHandshake(senderHost string, senderPort int) error {
 	senderCPort := senderPort + CLUSTER_BUS_PORT_INCR
 
 	node := &ClusterNode{
@@ -202,7 +336,7 @@ func ClusterStartHandshake(senderHost string, senderPort int, state *ClusterStat
 		},
 	}
 
-	state.Nodes[node.Name] = node
+	serverState.Nodes[node.Name] = node
 
 	conn, err := net.Dial(
 		"tcp",
@@ -217,7 +351,11 @@ func ClusterStartHandshake(senderHost string, senderPort int, state *ClusterStat
 	fmt.Printf("[DEBUG - MEET] NODE NAME: %s\n", node.Name)
 	fmt.Printf("[DEBUG - MEET] NODE BUS PORT: %d\n", node.ClusterBusPort)
 
-	CreateClusterLink(conn, node, false)
+	link := CreateClusterLink(conn, node, false)
+
+	fmt.Println("[TRACE-A] about to call clusterSendPing")
+	clusterSendPing(link, CLUSTERMSG_TYPE_PING)
+	fmt.Println("[TRACE-B] clusterSendPing returned")
 
 	return nil
 }
@@ -260,20 +398,21 @@ func ClusterMeet(targetConn net.Conn, bootstrapPort int, bootstrapHost string) e
 	return nil
 }
 
-func clusterMsgBuildHdr(state ClusterState, Type int) *clusterMsg {
+func clusterMsgBuildHdr(Type int) *clusterMsg {
 
 	var hdr clusterMsg
 
-	myself := state.Self.Name
+	myself := serverState.Self.Name
 
 	hdr.Sig = [4]byte{'R', 'C', 'm', 'b'}
 
 	hdr.Type = uint16(Type)
 	hdr.sender = myself
-	hdr.cport = uint16(state.Self.ClusterBusPort)
-	hdr.flags = uint16(state.Self.flags)
-	hdr.State = state.State
-	hdr.port = uint16(state.Self.t.port)
+	hdr.cport = uint16(serverState.Self.ClusterBusPort)
+	hdr.flags = uint16(serverState.Self.flags)
+	hdr.State = serverState.State
+	hdr.port = uint16(serverState.Self.ClientPort)
+	hdr.slots = serverState.Self.OwnedSlots
 
 	return &hdr
 }
@@ -293,7 +432,6 @@ func getRandomNode(nodes map[string]*ClusterNode) *ClusterNode {
 
 func clusterSetGossipEntry(hdr *clusterMsg, i int, n *ClusterNode) {
 	gossip := &clusterMsgDataGossip{}
-	hdr.Gossip[i] = gossip
 
 	gossip.nodeName = n.Name
 
@@ -312,12 +450,14 @@ func clusterSetGossipEntry(hdr *clusterMsg, i int, n *ClusterNode) {
 	gossip.port = uint16(n.t.port)
 	gossip.cport = uint16(n.ClusterBusPort)
 	gossip.flags = uint16(n.flags)
+	hdr.Gossip = append(hdr.Gossip, gossip)
+
 }
 
-func clusterSendPing(link *clusterLink, serverState *ClusterState, Type int) {
+func clusterSendPing(link *clusterLink, Type int) {
 
 	freshNodes := len(serverState.Nodes) - 2 // all  - (sender + reciever)
-	hdr := clusterMsgBuildHdr(*serverState, Type)
+	hdr := clusterMsgBuildHdr(Type)
 
 	// https://github.com/redis/redis/blob/4602d6e93e030efdc48f94dc2e3d3f9f32e7c72d/src/cluster_legacy.c#L3808-L3833
 	wanted := int(math.Floor(float64(len(serverState.Nodes) / 10)))
@@ -338,6 +478,7 @@ func clusterSendPing(link *clusterLink, serverState *ClusterState, Type int) {
 	selected := make(map[string]bool)
 
 	for freshNodes > 0 && gossipCount < wanted && maxIterations > 0 {
+		maxIterations--
 
 		curNode := getRandomNode(serverState.Nodes)
 
@@ -357,7 +498,6 @@ func clusterSendPing(link *clusterLink, serverState *ClusterState, Type int) {
 
 		selected[curNode.Name] = true
 		clusterSetGossipEntry(hdr, gossipCount, curNode)
-		maxIterations--
 		gossipCount++
 		freshNodes--
 	}
@@ -368,7 +508,117 @@ func clusterSendPing(link *clusterLink, serverState *ClusterState, Type int) {
 	hdr.totLen = totLen
 	hdr.count = uint16(gossipCount)
 
-	link.send <- encodeClusterMsg(hdr)
+	sendBuf := encodeClusterMsg(hdr)
+	fmt.Printf("[TRACE] enqueue bytes len=%d\n", len(sendBuf))
+
+	link.send <- sendBuf
+}
+
+func decodeClusterMsg(buf []byte) (*clusterMsg, error) {
+	if len(buf) < CLUSTERMSG_HEADER_SIZE {
+		return nil, fmt.Errorf("cluster message too short: %d bytes", len(buf))
+	}
+
+	msg := &clusterMsg{}
+	offset := 0
+
+	// signature: 4 bytes
+	copy(msg.Sig[:], buf[offset:offset+4])
+	offset += 4
+
+	if string(msg.Sig[:]) != "RCmb" {
+		return nil, fmt.Errorf("invalid cluster message signature: %q", msg.Sig)
+	}
+
+	// total length: 4 bytes
+	msg.totLen = binary.BigEndian.Uint32(buf[offset : offset+4])
+	offset += 4
+
+	if int(msg.totLen) != len(buf) {
+		return nil, fmt.Errorf(
+			"cluster message length mismatch: header=%d actual=%d",
+			msg.totLen,
+			len(buf),
+		)
+	}
+
+	// type: 2 bytes
+	msg.Type = binary.BigEndian.Uint16(buf[offset : offset+2])
+	offset += 2
+
+	// client port: 2 bytes
+	msg.port = binary.BigEndian.Uint16(buf[offset : offset+2])
+	offset += 2
+
+	// sender: fixed 40 bytes
+	senderBytes := buf[offset : offset+40]
+	msg.sender = string(bytes.TrimRight(senderBytes, "\x00"))
+	offset += 40
+
+	// cluster bus port: 2 bytes
+	msg.cport = binary.BigEndian.Uint16(buf[offset : offset+2])
+	offset += 2
+
+	// flags: 2 bytes
+	msg.flags = binary.BigEndian.Uint16(buf[offset : offset+2])
+	offset += 2
+
+	// state: 2 bytes
+	msg.State = int(binary.BigEndian.Uint16(buf[offset : offset+2]))
+	offset += 2
+
+	// slots
+	for i := 0; i < SLOT_WORDS; i++ {
+		msg.slots[i] = binary.BigEndian.Uint64(buf[offset : offset+8])
+		offset += 8
+	}
+
+	// Everything remaining should be gossip entries.
+	remaining := len(buf) - offset
+
+	if remaining%CLUSTERMSG_GOSSIP_SIZE != 0 {
+		return nil, fmt.Errorf(
+			"invalid gossip payload size: %d bytes",
+			remaining,
+		)
+	}
+
+	gossipCount := remaining / CLUSTERMSG_GOSSIP_SIZE
+	msg.count = uint16(gossipCount)
+	msg.Gossip = make([]*clusterMsgDataGossip, 0, gossipCount)
+
+	for i := 0; i < gossipCount; i++ {
+		gossip := &clusterMsgDataGossip{}
+
+		// node name: 40 bytes
+		nodeNameBytes := buf[offset : offset+40]
+		gossip.nodeName = string(bytes.TrimRight(nodeNameBytes, "\x00"))
+		offset += 40
+
+		// ping sent: 4 bytes
+		gossip.pingSent = binary.BigEndian.Uint32(buf[offset : offset+4])
+		offset += 4
+
+		// pong received: 4 bytes
+		gossip.pongReceived = binary.BigEndian.Uint32(buf[offset : offset+4])
+		offset += 4
+
+		// client port: 2 bytes
+		gossip.port = binary.BigEndian.Uint16(buf[offset : offset+2])
+		offset += 2
+
+		// cluster bus port: 2 bytes
+		gossip.cport = binary.BigEndian.Uint16(buf[offset : offset+2])
+		offset += 2
+
+		// flags: 2 bytes
+		gossip.flags = binary.BigEndian.Uint16(buf[offset : offset+2])
+		offset += 2
+
+		msg.Gossip = append(msg.Gossip, gossip)
+	}
+
+	return msg, nil
 }
 
 func encodeClusterMsg(msg *clusterMsg) []byte {
@@ -401,6 +651,11 @@ func encodeClusterMsg(msg *clusterMsg) []byte {
 
 	// state: 2 bytes
 	buf = binary.BigEndian.AppendUint16(buf, uint16(msg.State))
+
+	// owned slots
+	for _, word := range msg.slots {
+		buf = binary.BigEndian.AppendUint64(buf, word)
+	}
 
 	// ---- Gossip entries ----
 
@@ -436,21 +691,26 @@ func encodeClusterMsg(msg *clusterMsg) []byte {
 
 	return buf
 }
-func ClusterCron(state *ClusterState, iterations int) {
+
+func InitClusterState(state *ClusterState) {
+	serverState = state
+}
+func ClusterCron(iterations int) {
 
 	minPong := time.Time{}
 	// now := time.Now()
 	var minPongNode *ClusterNode
 
-	serverState = state
-
 	// Once every second, send a PING to a random node that is NOT Self
 	if iterations%10 == 0 {
 
-		n := rand.IntN(len(state.Nodes))
+		serverState.Mu.RLock()
+		defer serverState.Mu.RUnlock()
+
+		n := rand.IntN(len(serverState.Nodes))
 		counter := 0
 
-		for _, node := range state.Nodes {
+		for _, node := range serverState.Nodes {
 
 			if counter != n {
 				counter++
@@ -465,7 +725,7 @@ func ClusterCron(state *ClusterState, iterations int) {
 				continue
 			}
 
-			if minPongNode == nil && minPong.After(node.pongReceived) {
+			if minPongNode == nil || minPong.After(node.pongReceived) {
 				minPongNode = node
 				minPong = node.pongReceived
 			}
@@ -474,8 +734,8 @@ func ClusterCron(state *ClusterState, iterations int) {
 		}
 
 		if minPongNode != nil {
-			fmt.Printf("[DEBUG] Pinging node %s\n", minPongNode.Name)
-			clusterSendPing(minPongNode.link, state, CLUSTERMSG_TYPE_PING)
+			fmt.Printf("[CRON] Pinging node %s\n", minPongNode.Name)
+			clusterSendPing(minPongNode.link, CLUSTERMSG_TYPE_PING)
 		}
 
 	}

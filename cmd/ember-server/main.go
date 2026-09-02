@@ -334,7 +334,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 					panic(fmt.Errorf("[ERROR] %e", err))
 				}
 
-				if err := clusters.ClusterStartHandshake(senderHost, senderPort, serverState); err != nil {
+				if err := clusters.ClusterStartHandshake(senderHost, senderPort); err != nil {
 					panic(fmt.Errorf("[ERROR] %+e", err))
 				}
 
@@ -364,15 +364,18 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 
 	kv := kvstore.NewKVStore()
 
-	serverState = &clusters.ClusterState{
-		Nodes: make(map[string]*clusters.ClusterNode),
-	}
-
-	self := clusters.NewNode(port, clusterHost, serverState)
-	serverState.Nodes[self.Name] = self
-	serverState.Self = self
-
 	if clusterEnabled {
+		serverState = &clusters.ClusterState{
+			Nodes: make(map[string]*clusters.ClusterNode),
+		}
+
+		clusters.InitClusterState(serverState)
+
+		self := clusters.NewNode(port, clusterHost)
+		serverState.Nodes[self.Name] = self
+		serverState.Self = self
+
+
 		// Cluster bus listener
 		clusterBusListener, err := net.Listen(
 			"tcp",
@@ -408,7 +411,7 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 			iterations := 0
 
 			for range ticker.C {
-				clusters.ClusterCron(serverState, iterations)
+				clusters.ClusterCron(iterations)
 				iterations++
 			}
 		}()
