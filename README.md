@@ -1,4 +1,4 @@
-Currently supports:
+[WIP] Currently supports:
 
 * RESP2/RESP3 Compatible
 * Pub/Sub (PUBLISH, SUBSCRIBE, UNSUBSCRIBE)
