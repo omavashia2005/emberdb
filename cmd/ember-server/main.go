@@ -14,6 +14,8 @@ import (
 	"github.com/omavashia2005/emberdb/utils/pubsub"
 )
 
+var serverState *clusters.ClusterState
+
 func BytesToLower(b []byte) []byte {
 	for i := 0; i < len(b); i++ {
 		c := b[i]
@@ -32,7 +34,7 @@ func bstring(bs []byte) string {
 var ps = pubsub.NewPubSub()
 var startTime = time.Now()
 
-func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, clusterState *clusters.ClusterState) {
+func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 	defer conn.Close()
 
 	rconn := resp.NewServer(conn)
@@ -68,9 +70,9 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 		case "ping":
 			if clusterEnabled {
 
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ID))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", clusterState.Self.ClientPort))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", clusterState.Self.ClusterBusPort))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", serverState.Self.Name))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", serverState.Self.ClientPort))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", serverState.Self.ClusterBusPort))
 
 			} else {
 				rconn.WriteStatusString("PONG")
@@ -301,14 +303,14 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 					panic(err)
 				}
 
-				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %s\n", slotStart, slotEnd, clusterState.Self.ClientPort)
+				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %s\n", slotStart, slotEnd, serverState.Self.ClientPort)
 
-				clusterState.Self.NumSlots = 0
+				serverState.Self.NumSlots = 0
 				for slot := slotStart; slot <= slotEnd; slot++ {
 					word := slot / 64
 					bit := slot % 64
-					clusterState.Self.OwnedSlots[word] |= uint64(1) << bit
-					clusterState.Self.NumSlots++
+					serverState.Self.OwnedSlots[word] |= uint64(1) << bit
+					serverState.Self.NumSlots++
 				}
 
 				rconn.WriteOK()
@@ -325,7 +327,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 					panic(err)
 				}
 
-				if err := clusters.ClusterStartHandshake(senderHost, senderPort, clusterState); err != nil {
+				if err := clusters.ClusterStartHandshake(senderHost, senderPort, serverState); err != nil {
 					panic(err)
 				}
 
@@ -343,7 +345,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool, c
 
 }
 func Run(port string, clusterEnabled bool) {
-	listener, err := net.Listen("tcp", port)
+	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		panic(err)
 	}
@@ -351,14 +353,12 @@ func Run(port string, clusterEnabled bool) {
 	defer listener.Close()
 	kv := kvstore.NewKVStore()
 
-	clusterState := &clusters.ClusterState{
-		Nodes: make(map[string]*clusters.ClusterNode),
-	}
+	serverState = &clusters.ClusterState{}
+	serverState.Nodes = make(map[string]*clusters.ClusterNode)
 
-	initNode := clusters.NewNode(port, clusterState)
-	clusterState.Nodes[initNode.ID] = initNode
-	clusterState.Self = initNode
-
+	self := clusters.NewNode(port, serverState)
+	serverState.Nodes[self.Name] = self
+	serverState.Self = self
 
 	if clusterEnabled {
 		go func() {
@@ -367,7 +367,7 @@ func Run(port string, clusterEnabled bool) {
 			iterations := 0
 
 			for range ticker.C {
-				clusters.ClusterCron(clusterState, iterations)
+				clusters.ClusterCron(serverState, iterations)
 				iterations++
 			}
 		}()
@@ -381,7 +381,7 @@ func Run(port string, clusterEnabled bool) {
 
 		log.Printf("opened connection from %s", conn.RemoteAddr())
 
-		go handleConnection(conn, kv, clusterEnabled, clusterState)
+		go handleConnection(conn, kv, clusterEnabled)
 	}
 
 }
