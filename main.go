@@ -50,9 +50,11 @@ func startCluster() error {
 
 func main() {
 
-	if len(os.Args) == 3 && os.Args[1] == "__node" {
+	if len(os.Args) == 4 && os.Args[1] == "__node" {
 		port := os.Args[2]
-		server.Run(port, true)
+		clusterHost := os.Args[3]
+
+		server.Run(port, clusterHost, true)
 		return
 	}
 
@@ -117,13 +119,14 @@ func main() {
 				switch args[1] {
 				case "start":
 					fmt.Println("ember running on port 6739")
-					go server.Run(":6379", false)
+					go server.Run(":6379", "", false)
 					continue
 
 				case "cluster-start":
 					err := startCluster()
 					if err != nil {
-						panic(err)
+						panic(fmt.Errorf("[ERROR] %e", err))
+
 					}
 					continue
 				default:
@@ -140,7 +143,7 @@ func main() {
 
 					port = ":" + port
 
-					go server.Run(port, false)
+					go server.Run(port, "", false)
 					continue
 				default:
 					fmt.Printf("No such option%s\n", args[1])

@@ -296,14 +296,15 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				slotStart, err := strconv.Atoi(string(args[1]))
 				if err != nil {
-					panic(err)
+					panic(fmt.Errorf("[ERROR] %e", err))
 				}
 				slotEnd, err := strconv.Atoi(string(args[2]))
 				if err != nil {
-					panic(err)
+					panic(fmt.Errorf("[ERROR] %e", err))
+
 				}
 
-				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %s\n", slotStart, slotEnd, serverState.Self.ClientPort)
+				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %d\n", slotStart, slotEnd, serverState.Self.ClientPort)
 
 				serverState.Self.NumSlots = 0
 				for slot := slotStart; slot <= slotEnd; slot++ {
@@ -315,6 +316,12 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				rconn.WriteOK()
 
+			case "MYADDR":
+				rconn.WriteArrayString([]string{
+					serverState.Self.Host,
+					strconv.Itoa(serverState.Self.ClientPort),
+				})
+
 			case "MEET":
 				if len(args) != 3 {
 					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MEET' command"))
@@ -324,12 +331,14 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				senderHost := string(args[1])
 				senderPort, err := strconv.Atoi(string(args[2]))
 				if err != nil {
-					panic(err)
+					panic(fmt.Errorf("[ERROR] %e", err))
 				}
 
 				if err := clusters.ClusterStartHandshake(senderHost, senderPort, serverState); err != nil {
-					panic(err)
+					panic(fmt.Errorf("[ERROR] %+e", err))
 				}
+
+				fmt.Printf("[DEBUG-MEET] MEET TO PORT %d SUCCESSFUL\n", senderPort)
 
 				rconn.WriteOK()
 
@@ -345,11 +354,11 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 }
 
-
-func Run(port string, clusterEnabled bool) {
+func Run(port string, clusterHost string, clusterEnabled bool) {
 	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("[ERROR] %e", err))
+
 	}
 	defer listener.Close()
 
@@ -359,35 +368,35 @@ func Run(port string, clusterEnabled bool) {
 		Nodes: make(map[string]*clusters.ClusterNode),
 	}
 
-	self := clusters.NewNode(port, serverState)
+	self := clusters.NewNode(port, clusterHost, serverState)
 	serverState.Nodes[self.Name] = self
 	serverState.Self = self
 
 	if clusterEnabled {
 		// Cluster bus listener
-		clusterListener, err := net.Listen(
+		clusterBusListener, err := net.Listen(
 			"tcp",
 			fmt.Sprintf(":%d", self.ClusterBusPort),
 		)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("[ERROR] %e", err))
 		}
 
 		go func() {
-			defer clusterListener.Close()
+			defer clusterBusListener.Close()
 
 			for {
-				conn, err := clusterListener.Accept()
+				busConn, err := clusterBusListener.Accept()
 				if err != nil {
 					return
 				}
 
 				fmt.Printf(
 					"[CLUSTER] inbound connection from %s\n",
-					conn.RemoteAddr(),
+					busConn.RemoteAddr(),
 				)
 
-				clusters.CreateClusterLink(conn, nil, true)
+				clusters.CreateClusterLink(busConn, nil, true)
 			}
 		}()
 
@@ -409,7 +418,7 @@ func Run(port string, clusterEnabled bool) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("[ERROR] %e", err))
 		}
 
 		log.Printf("opened connection from %s", conn.RemoteAddr())

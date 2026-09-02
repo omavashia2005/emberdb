@@ -51,6 +51,7 @@ type tcp struct {
 
 type ClusterNode struct {
 	Name           string
+	Host           string
 	ClientPort     int
 	ClusterBusPort int
 	OwnedSlots     [SLOT_WORDS]uint64
@@ -65,7 +66,8 @@ type ClusterNode struct {
 
 type ClusterState struct {
 	Self  *ClusterNode
-	Nodes map[string]*ClusterNode     // ID to node mapping
+	Nodes map[string]*ClusterNode // ID to node mapping
+	Host  string
 	Slots [CLUSTER_SLOTS]*ClusterNode // Global array for slot ownership
 	State int
 }
@@ -111,23 +113,21 @@ D. Cluster-bus transport
 E. Cluster-state synchronization over bus
 */
 
-
-func NewNode(clientPort string, state *ClusterState) *ClusterNode {
+func NewNode(clientPort string, host string, state *ClusterState) *ClusterNode {
 	client, err := strconv.Atoi(clientPort)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("[ERROR] %e", err))
 	}
 
 	clusterBusPort := client + CLUSTER_BUS_PORT_INCR
 
-	newNode := &ClusterNode{
+	return &ClusterNode{
 		Name:           uuid.NewString(),
+		Host:           host,
 		ClientPort:     client,
 		ClusterBusPort: clusterBusPort,
 		NumSlots:       0,
 	}
-
-	return newNode
 }
 
 // func RebalanceSlots() {
@@ -212,6 +212,11 @@ func ClusterStartHandshake(senderHost string, senderPort int, state *ClusterStat
 		return err
 	}
 
+	fmt.Printf("[DEBUG - MEET] HANDSHAKE ON SENDER PORT: %d\n", senderPort)
+	fmt.Printf("[DEBUG - MEET] HANDSHAKE ON SENDER HOST: %s\n", senderHost)
+	fmt.Printf("[DEBUG - MEET] NODE NAME: %s\n", node.Name)
+	fmt.Printf("[DEBUG - MEET] NODE BUS PORT: %d\n", node.ClusterBusPort)
+
 	CreateClusterLink(conn, node, false)
 
 	return nil
@@ -244,7 +249,7 @@ func ClusterMeet(targetConn net.Conn, bootstrapPort int, bootstrapHost string) e
 		if r != "OK" {
 			return fmt.Errorf("unexpected response: %s", r)
 		} else {
-			fmt.Printf("Meet successful!\n")
+			fmt.Printf("[DEBUG-MEET] MEET FROM PORT %d SUCCESSFUL!\n", bootstrapPort)
 		}
 	case error:
 		return r

@@ -32,13 +32,15 @@ type redisContext struct {
 const CLUSTER_CLI_SLOTS = 16384
 
 type cliNode struct {
-	ctx        redisContext
-	port       string
-	busPort    string
-	dirty      int
-	slots      [CLUSTER_CLI_SLOTS]uint8
-	slotsCount int
-	conn       net.Conn
+	ctx         redisContext
+	port        string
+	busPort     string
+	dirty       int
+	slots       [CLUSTER_CLI_SLOTS]uint8
+	slotsCount  int
+	conn        net.Conn
+	clusterHost string
+	clusterPort int
 }
 
 func connect(port int) {
@@ -197,6 +199,36 @@ func main() {
 			node.ctx.TCP = &tcp
 			node.conn = conn
 
+			rconn := resp.NewServer(conn)
+			reader := resp3.NewReader(conn)
+
+			err = rconn.WriteArrayString([]string{
+				"CLUSTER",
+				"MYADDR",
+			})
+
+			if err != nil {
+				panic(err)
+			}
+
+			v, _, err := reader.ReadValue()
+			if err != nil {
+				panic(err)
+			}
+
+			result := v.SmartResult()
+			values, ok := result.([]interface{})
+			if !ok || len(values) != 2 {
+				panic(fmt.Errorf("unexpected CLUSTER MYADDR response: %#v", result))
+			}
+
+			node.clusterHost = fmt.Sprint(values[0])
+
+			node.clusterPort, err = strconv.Atoi(fmt.Sprint(values[1]))
+			if err != nil {
+				panic(err)
+			}
+
 			cliNodeArray = append(cliNodeArray, &node)
 
 			fmt.Printf("Successfully connected to %s\n", addr)
@@ -262,7 +294,7 @@ func main() {
 
 			v, _, err := reader.ReadValue()
 			if err != nil {
-				panic(err)
+				panic(fmt.Errorf("[ERROR] %e", err))
 			}
 
 			result := v.SmartResult()
@@ -292,37 +324,15 @@ func main() {
 		for i := 1; i < len(cliNodeArray); i++ {
 			target := cliNodeArray[i]
 
-			targetPort, err := strconv.Atoi(target.ctx.TCP.port)
-			if err != nil {
-				panic(err)
-			}
-
-			err = clusters.ClusterMeet(
+			err := clusters.ClusterMeet(
 				bootstrapConn,
-				targetPort,
-				target.ctx.TCP.host,
+				target.clusterPort,
+				target.clusterHost,
 			)
 			if err != nil {
-				panic(err)
+				panic(fmt.Errorf("[ERROR] %e", err))
 			}
 		}
-
-		// bootstrapAddr := addrs[0]
-		// bootstrapHost, bootstrapPort, err := net.SplitHostPort(bootstrapAddr)
-		// if err != nil {
-		// 	panic(err)
-		// }
-		//
-		// for i := 1; i < len(addrs); i++ {
-		// 	targetConn := cliNodeArray[i].conn
-		//
-		// 	bPort, err := strconv.Atoi(bootstrapPort)
-		// 	if err != nil {
-		// 		panic(err)
-		// 	}
-		//
-		// 	clusters.ClusterMeet(targetConn, bPort, bootstrapHost) // 7001, 7000
-		// }
 
 	case "--port":
 		if len(os.Args) != 3 {
