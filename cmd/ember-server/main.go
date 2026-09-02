@@ -316,7 +316,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				rconn.WriteOK()
 
 			case "MEET":
-				if len(args) != 2 {
+				if len(args) != 3 {
 					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MEET' command"))
 					continue
 				}
@@ -344,26 +344,58 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 	}
 
 }
+
+
 func Run(port string, clusterEnabled bool) {
 	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		panic(err)
 	}
-
 	defer listener.Close()
+
 	kv := kvstore.NewKVStore()
 
-	serverState = &clusters.ClusterState{}
-	serverState.Nodes = make(map[string]*clusters.ClusterNode)
+	serverState = &clusters.ClusterState{
+		Nodes: make(map[string]*clusters.ClusterNode),
+	}
 
 	self := clusters.NewNode(port, serverState)
 	serverState.Nodes[self.Name] = self
 	serverState.Self = self
 
 	if clusterEnabled {
+		// Cluster bus listener
+		clusterListener, err := net.Listen(
+			"tcp",
+			fmt.Sprintf(":%d", self.ClusterBusPort),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		go func() {
+			defer clusterListener.Close()
+
+			for {
+				conn, err := clusterListener.Accept()
+				if err != nil {
+					return
+				}
+
+				fmt.Printf(
+					"[CLUSTER] inbound connection from %s\n",
+					conn.RemoteAddr(),
+				)
+
+				clusters.CreateClusterLink(conn, nil, true)
+			}
+		}()
+
+		// Cluster cron
 		go func() {
 			ticker := time.NewTicker(100 * time.Millisecond)
 			defer ticker.Stop()
+
 			iterations := 0
 
 			for range ticker.C {
@@ -373,6 +405,7 @@ func Run(port string, clusterEnabled bool) {
 		}()
 	}
 
+	// Normal client connections
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -383,5 +416,4 @@ func Run(port string, clusterEnabled bool) {
 
 		go handleConnection(conn, kv, clusterEnabled)
 	}
-
 }

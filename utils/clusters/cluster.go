@@ -111,9 +111,13 @@ D. Cluster-bus transport
 E. Cluster-state synchronization over bus
 */
 
-func NewNode(clientPort string, state *ClusterState) *ClusterNode {
 
-	client, _ := strconv.Atoi(clientPort[1:])
+func NewNode(clientPort string, state *ClusterState) *ClusterNode {
+	client, err := strconv.Atoi(clientPort)
+	if err != nil {
+		panic(err)
+	}
+
 	clusterBusPort := client + CLUSTER_BUS_PORT_INCR
 
 	newNode := &ClusterNode{
@@ -161,7 +165,7 @@ func clusterWriteLoop(link *clusterLink) {
 		}
 	}
 }
-func createClusterLink(conn net.Conn, node *ClusterNode, inbound bool) *clusterLink {
+func CreateClusterLink(conn net.Conn, node *ClusterNode, inbound bool) *clusterLink {
 	link := &clusterLink{
 		connection: conn,
 		node:       node,
@@ -208,7 +212,7 @@ func ClusterStartHandshake(senderHost string, senderPort int, state *ClusterStat
 		return err
 	}
 
-	createClusterLink(conn, node, false)
+	CreateClusterLink(conn, node, false)
 
 	return nil
 }

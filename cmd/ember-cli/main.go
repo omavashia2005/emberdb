@@ -287,22 +287,42 @@ func main() {
 			cursor += slotsPerNode
 		}
 
-		bootstrapAddr := addrs[0]
-		bootstrapHost, bootstrapPort, err := net.SplitHostPort(bootstrapAddr)
-		if err != nil {
-			panic(err)
-		}
+		bootstrapConn := cliNodeArray[0].conn
 
-		for i := 1; i < len(addrs); i++ {
-			targetConn := cliNodeArray[i].conn
+		for i := 1; i < len(cliNodeArray); i++ {
+			target := cliNodeArray[i]
 
-			bPort, err := strconv.Atoi(bootstrapPort)
+			targetPort, err := strconv.Atoi(target.ctx.TCP.port)
 			if err != nil {
 				panic(err)
 			}
 
-			clusters.ClusterMeet(targetConn, bPort, bootstrapHost) // 7001, 7000
+			err = clusters.ClusterMeet(
+				bootstrapConn,
+				targetPort,
+				target.ctx.TCP.host,
+			)
+			if err != nil {
+				panic(err)
+			}
 		}
+
+		// bootstrapAddr := addrs[0]
+		// bootstrapHost, bootstrapPort, err := net.SplitHostPort(bootstrapAddr)
+		// if err != nil {
+		// 	panic(err)
+		// }
+		//
+		// for i := 1; i < len(addrs); i++ {
+		// 	targetConn := cliNodeArray[i].conn
+		//
+		// 	bPort, err := strconv.Atoi(bootstrapPort)
+		// 	if err != nil {
+		// 		panic(err)
+		// 	}
+		//
+		// 	clusters.ClusterMeet(targetConn, bPort, bootstrapHost) // 7001, 7000
+		// }
 
 	case "--port":
 		if len(os.Args) != 3 {
