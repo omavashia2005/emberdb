@@ -16,3 +16,15 @@ services:
     command: ["__node", "6379", "node-3"]
     ports:
       - "6381:6379"
+
+  node-4:
+    build: .
+    command: ["__node", "6379", "node-4"]
+    ports:
+      - "6382:6379"
+
+  node-5:
+    build: .
+    command: ["__node", "6379", "node-5"]
+    ports:
+      - "6383:6379"
