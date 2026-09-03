@@ -119,7 +119,7 @@ func main() {
 				switch args[1] {
 				case "start":
 					fmt.Println("ember running on port 6739")
-					go server.Run(":6379", "", false)
+					go server.Run("6379", "", false)
 					continue
 
 				case "cluster-start":
