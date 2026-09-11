@@ -11,4 +11,5 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/lobaro/crc16 v0.1.0 // indirect
 )

@@ -8,3 +8,5 @@ github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 h1:El6M4kTTCOh6aBiKaU
 github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510/go.mod h1:pupxD2MaaD3pAXIBCelhxNneeOaAeabZDe5s4K6zSpQ=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/lobaro/crc16 v0.1.0 h1:P9pplQfo8DMKD6WM7KGtBwRTBJ0oBWD/Qx7o+AC7CX0=
+github.com/lobaro/crc16 v0.1.0/go.mod h1:23+4gTZ+hUDwiANqKqHHiXUgwMs1lJrGFJCv4zB4Y5A=

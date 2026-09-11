@@ -257,7 +257,9 @@ func clusterProcessMsg(link *clusterLink, msg *clusterMsg) {
 		link.node = node
 	}
 
+	link.node.OwnedSlots = msg.slots
 	link.node.NumSlots = countSlots(msg.slots)
+
 	serverState.Nodes[link.node.Name] = link.node
 
 	clusterProcessGossip(msg)
@@ -739,4 +741,28 @@ func ClusterCron(iterations int) {
 		}
 
 	}
+}
+
+func (s *ClusterState) GetSlotOwner(slot int) *ClusterNode {
+	word := slot / 64
+	bit := slot % 64
+	mask := uint64(1) << bit
+
+	// Check ourselves first.
+	if s.Self != nil && s.Self.OwnedSlots[word]&mask != 0 {
+		return s.Self
+	}
+
+	// Then check the other nodes.
+	for _, node := range s.Nodes {
+		if node == nil {
+			continue
+		}
+
+		if node.OwnedSlots[word]&mask != 0 {
+			return node
+		}
+	}
+
+	return nil
 }

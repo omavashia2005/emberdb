@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/Fusl/go-resp"
+	"github.com/lobaro/crc16"
 	"github.com/omavashia2005/emberdb/utils/clusters"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
 	"github.com/omavashia2005/emberdb/utils/pubsub"
@@ -71,7 +72,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			if clusterEnabled {
 
 				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", serverState.Self.Name))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", serverState.Self.ClientPort))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", serverState.Self.ClientPort))
 				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", serverState.Self.ClusterBusPort))
 
 			} else {
@@ -98,26 +99,32 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := string(args[1])
 
-			// if clusterEnabled {
-			// 	// hash the key
-			// 	// calculate slot
-			// 	// MOVE or execute
-			//
-			// 	/*
-			// 		Each node needs:
-			// 			* Slots it owns
-			// 			* Which nodes own which slots
-			// 	*/
-			//
-			// 	clusters.GetNodeFromHash(key, clusterState)
-			//
-			// } else {
-			// 	kv.Set(key, val)
-			// }
+			if clusterEnabled {
+				hash := crc16.ChecksumXModem([]byte(key))
+				slot := hash % 16384
 
-			kv.Set(key, val)
+				ownerNode := serverState.GetSlotOwner(int(slot))
 
-			rconn.WriteOK()
+				if ownerNode == nil {
+					rconn.WriteError(fmt.Errorf("CLUSTERDOWN Hash slot not served"))
+					continue
+				}
+
+				if ownerNode != serverState.Self {
+					rconn.WriteStatusString(
+						fmt.Sprintf("MOVED %d %s", slot, ownerNode.Name),
+					)
+					continue
+				}
+
+				kv.Set(key, val)
+				rconn.WriteOK()
+
+			} else {
+				kv.Set(key, val)
+				rconn.WriteOK()
+			}
+
 		case "get":
 			if len(args) != 1 {
 				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'GET' command"))
@@ -289,6 +296,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			switch string(args[0]) {
 
 			case "ADDSLOTSRANGE":
+
 				if len(args) != 3 {
 					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER ADDSLOTSRANGE' command"))
 					continue
@@ -306,13 +314,16 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %d\n", slotStart, slotEnd, serverState.Self.ClientPort)
 
+				serverState.Mu.Lock()
 				serverState.Self.NumSlots = 0
 				for slot := slotStart; slot <= slotEnd; slot++ {
 					word := slot / 64
 					bit := slot % 64
 					serverState.Self.OwnedSlots[word] |= uint64(1) << bit
 					serverState.Self.NumSlots++
+					serverState.Slots[slot] = serverState.Self
 				}
+				serverState.Mu.Unlock()
 
 				rconn.WriteOK()
 
@@ -374,7 +385,6 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 		self := clusters.NewNode(port, clusterHost)
 		serverState.Nodes[self.Name] = self
 		serverState.Self = self
-
 
 		// Cluster bus listener
 		clusterBusListener, err := net.Listen(
