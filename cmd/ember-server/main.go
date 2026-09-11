@@ -35,10 +35,7 @@ func bstring(bs []byte) string {
 var ps = pubsub.NewPubSub()
 var startTime = time.Now()
 
-func toMoveorNotToMove(key string, conn net.Conn) string {
-
-	rconn := resp.NewServer(conn)
-	defer rconn.Close()
+func toMoveorNotToMove(key string, rconn *resp.Server) string {
 
 	hash := crc16.ChecksumXModem([]byte(key))
 	slot := hash % 16384
@@ -125,7 +122,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := string(args[1])
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -141,7 +138,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := kv.Get(key)
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -161,7 +158,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			valueToAppend := string(args[1])
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -177,7 +174,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -197,7 +194,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			incrByVal := string(args[1])
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -216,7 +213,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -236,7 +233,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 
-			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
 				continue
 			}
 
@@ -249,18 +246,44 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			rconn.WriteOK()
 		case "mset":
-			if len(args)%2 != 0 {
+			if len(args) == 0 || len(args)%2 != 0 {
 				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'MSET' command"))
 				continue
 			}
 
+			firstKey := string(args[0])
+
+			if clusterEnabled {
+				firstSlot := crc16.ChecksumXModem([]byte(firstKey)) % 16384
+
+				validQuery := true
+
+				for i := 2; i < len(args); i += 2 {
+					key := string(args[i])
+					slot := crc16.ChecksumXModem([]byte(key)) % 16384
+
+					if slot != firstSlot {
+						rconn.WriteError(
+							fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
+						)
+						validQuery = false
+						break
+					}
+				}
+
+				if !validQuery {
+					continue
+				}
+
+				// Since every key hashes to the same slot,
+				// checking the first key is sufficient.
+				if toMoveorNotToMove(firstKey, rconn) != "OK" {
+					continue
+				}
+			}
+
 			for i := 0; i < len(args); i += 2 {
 				key, val := string(args[i]), string(args[i+1])
-
-				// if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
-				// 	continue
-				// }
-
 				kv.Set(key, val)
 			}
 
@@ -272,21 +295,43 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				continue
 			}
 
+			validQuery := true
+
+			if clusterEnabled {
+				firstKey := string(args[0])
+
+				hash := crc16.ChecksumXModem([]byte(firstKey))
+				firstSlot := hash % 16384
+
+				for i := 1; i < len(args); i++ {
+					key := string(args[i])
+
+					if (crc16.ChecksumXModem([]byte(key)) % 16384) != firstSlot {
+						rconn.WriteError(
+							fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
+						)
+						validQuery = false
+						break
+					}
+				}
+
+				if !validQuery {
+					continue
+				}
+
+				if toMoveorNotToMove(firstKey, rconn) != "OK" {
+					continue
+				}
+			}
+
 			var resp []string
 
-			for i := 0; i < len(args); i += 1 {
-
+			for i := 0; i < len(args); i++ {
 				key := string(args[i])
-
-				// if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
-				// 	continue
-				// }
-
 				resp = append(resp, kv.Get(key))
 			}
 
 			rconn.WriteArrayString(resp)
-
 		case "publish":
 			if len(args) == 3 {
 				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'PUBLISH' command"))
