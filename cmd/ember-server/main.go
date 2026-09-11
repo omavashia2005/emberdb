@@ -35,6 +35,32 @@ func bstring(bs []byte) string {
 var ps = pubsub.NewPubSub()
 var startTime = time.Now()
 
+func toMoveorNotToMove(key string, conn net.Conn) string {
+
+	rconn := resp.NewServer(conn)
+	defer rconn.Close()
+
+	hash := crc16.ChecksumXModem([]byte(key))
+	slot := hash % 16384
+
+	ownerNode := serverState.GetSlotOwner(int(slot))
+
+	if ownerNode == nil {
+		rconn.WriteError(fmt.Errorf("CLUSTERDOWN Hash slot not served"))
+		return "ERROR"
+	}
+
+	if ownerNode != serverState.Self {
+		rconn.WriteStatusString(
+			fmt.Sprintf("MOVED %d %s", slot, ownerNode.Name),
+		)
+
+		return "MOVED"
+	}
+
+	return "OK"
+}
+
 func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 	defer conn.Close()
 
@@ -99,31 +125,12 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := string(args[1])
 
-			if clusterEnabled {
-				hash := crc16.ChecksumXModem([]byte(key))
-				slot := hash % 16384
-
-				ownerNode := serverState.GetSlotOwner(int(slot))
-
-				if ownerNode == nil {
-					rconn.WriteError(fmt.Errorf("CLUSTERDOWN Hash slot not served"))
-					continue
-				}
-
-				if ownerNode != serverState.Self {
-					rconn.WriteStatusString(
-						fmt.Sprintf("MOVED %d %s", slot, ownerNode.Name),
-					)
-					continue
-				}
-
-				kv.Set(key, val)
-				rconn.WriteOK()
-
-			} else {
-				kv.Set(key, val)
-				rconn.WriteOK()
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
 			}
+
+			kv.Set(key, val)
+			rconn.WriteOK()
 
 		case "get":
 			if len(args) != 1 {
@@ -134,12 +141,17 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := kv.Get(key)
 
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
+			}
+
 			if val == "(nil)" {
 				rconn.WriteStatusString("No such key")
 				continue
 			}
 
 			rconn.WriteString(val)
+
 		case "append":
 			if len(args) != 2 {
 				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'APPEND' command"))
@@ -148,6 +160,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 			valueToAppend := string(args[1])
+
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
+			}
 
 			kv.Append(key, valueToAppend)
 
@@ -160,6 +176,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			key := string(args[0])
+
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
+			}
 
 			err := kv.Incr(key)
 			if err != nil {
@@ -177,6 +197,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			incrByVal := string(args[1])
 
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
+			}
+
 			err := kv.IncrBy(key, incrByVal)
 			if err != nil {
 				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
@@ -191,6 +215,11 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			key := string(args[0])
+
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
+			}
+
 			err := kv.Decr(key)
 
 			if err != nil {
@@ -206,6 +235,11 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			key := string(args[0])
+
+			if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				continue
+			}
+
 			decrByVal := string(args[1])
 
 			err := kv.DecrBy(key, decrByVal)
@@ -221,7 +255,13 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			for i := 0; i < len(args); i += 2 {
-				kv.Set(string(args[i]), string(args[i+1]))
+				key, val := string(args[i]), string(args[i+1])
+
+				// if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				// 	continue
+				// }
+
+				kv.Set(key, val)
 			}
 
 			rconn.WriteOK()
@@ -235,7 +275,14 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			var resp []string
 
 			for i := 0; i < len(args); i += 1 {
-				resp = append(resp, kv.Get(string(args[i])))
+
+				key := string(args[i])
+
+				// if clusterEnabled && toMoveorNotToMove(key, conn) != "OK" {
+				// 	continue
+				// }
+
+				resp = append(resp, kv.Get(key))
 			}
 
 			rconn.WriteArrayString(resp)
