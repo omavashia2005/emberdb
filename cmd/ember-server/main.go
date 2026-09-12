@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -37,8 +38,21 @@ var startTime = time.Now()
 
 func toMoveorNotToMove(key string, rconn *resp.Server) string {
 
-	hash := crc16.ChecksumXModem([]byte(key))
+	start := strings.Index(key, "{")
+	end := strings.LastIndex(key, "}")
+
+	var hash uint16
+
+	if start == -1 || end <= start+1 || end == -1 {
+		hash = crc16.ChecksumXModem([]byte(key))
+	} else {
+		fmt.Printf("[DEBUG - SET - TAGS] %s", key[start+1:end])
+		hash = crc16.ChecksumXModem([]byte(key[start+1 : end]))
+	}
+
 	slot := hash % 16384
+
+	fmt.Printf("[DEBUG - SLOT] %d", slot)
 
 	ownerNode := serverState.GetSlotOwner(int(slot))
 
