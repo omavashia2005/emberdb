@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -17,6 +18,8 @@ import (
 
 	resp "github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
+
+	server "github.com/omavashia2005/emberdb/cmd/ember-server"
 )
 
 type tcp struct {
@@ -135,6 +138,123 @@ func main() {
 	}
 
 	switch os.Args[1] {
+
+	case "--cluster-add-node":
+
+		/*
+			--cluster-add-node --docker <new_node_name>:<new_node_port> <existing_node_name>:<existing_node_port>
+		*/
+		if os.Args[2] == "--docker" {
+			if len(os.Args) != 5 {
+				fmt.Println("Invalid arguments for this command")
+				return
+			}
+
+			newNodeArg := string(os.Args[3])
+			existingNodeArg := string(os.Args[4])
+
+			newNodeName, newNodePort, ok := strings.Cut(newNodeArg, ":")
+			if !ok {
+				fmt.Println("Invalid new node. Expected <name>:<port>")
+				return
+			}
+
+			existingNodeName, existingNodePort, ok := strings.Cut(existingNodeArg, ":")
+			if !ok {
+				fmt.Println("Invalid existing node. Expected <name>:<port>")
+				return
+			}
+
+			cmd := exec.Command(
+				"docker", "compose", "run",
+				"-d",
+				"--name", newNodeName,
+				"-p", newNodePort+":6379",
+				"node-1",
+				"__node", "6379", newNodeName,
+			)
+
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				fmt.Printf("Error: %v\n%s\n", err, output)
+				return
+			}
+
+			existingPort, err := strconv.Atoi(existingNodePort)
+			if err != nil {
+				fmt.Printf("[ERROR  - ADDNODE] %e", err)
+				return
+			}
+			newNodeConn, err := net.Dial("tcp", "127.0.0.1:"+newNodePort)
+			if err != nil {
+				fmt.Printf("[ERROR  - ADDNODE] %e", err)
+				return
+			}
+			defer newNodeConn.Close()
+
+			err = clusters.ClusterMeet(
+				newNodeConn,
+				existingPort,
+				existingNodeName,
+			)
+			if err != nil {
+				fmt.Printf("[ERROR] %e", err)
+				return
+			}
+
+		} else {
+
+			/*
+				--cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
+			*/
+			if len(os.Args) != 4 {
+				fmt.Println("Invalid arguments for this command")
+				return
+			}
+
+			newNodeArg := string(os.Args[2])
+			existingNodeArg := string(os.Args[3])
+
+			newNodeHost, newNodePort, ok := strings.Cut(newNodeArg, ":")
+			if !ok {
+				fmt.Println("Invalid new node. Expected <name>:<port>")
+				return
+			}
+
+			existingNodeHost, existingNodePort, ok := strings.Cut(existingNodeArg, ":")
+			if !ok {
+				fmt.Println("Invalid existing node. Expected <name>:<port>")
+				return
+			}
+
+			go server.Run(newNodePort, newNodeHost, true)
+
+			newNodeConn, err := net.Dial(
+				"tcp",
+				net.JoinHostPort(newNodeHost, newNodePort),
+			)
+			if err != nil {
+				fmt.Printf("[ERROR - ADDNODE] %v\n", err)
+				return
+			}
+			defer newNodeConn.Close()
+
+			existingPort, err := strconv.Atoi(existingNodePort)
+			if err != nil {
+				fmt.Printf("[ERROR - ADDNODE] %v\n", err)
+				return
+			}
+
+			err = clusters.ClusterMeet(
+				newNodeConn,
+				existingPort,
+				existingNodeHost,
+			)
+			if err != nil {
+				fmt.Printf("[ERROR - ADDNODE] %v\n", err)
+				return
+			}
+		}
 
 	/*
 		parse supplied node addresses

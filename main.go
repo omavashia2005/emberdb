@@ -65,6 +65,17 @@ func main() {
 				_, _ = node.Process.Wait()
 			}
 		}
+
+		cmd := exec.Command(
+			"docker",
+			"compose",
+			"down",
+			"--remove-orphans",
+		)
+
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("[ERROR] %v\n", err)
+		}
 	}
 
 	input := make(chan string)
