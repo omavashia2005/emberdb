@@ -34,7 +34,6 @@ func bstring(bs []byte) string {
 }
 
 var ps = pubsub.NewPubSub()
-var startTime = time.Now()
 
 func toMoveorNotToMove(key string, rconn *resp.Server) string {
 

@@ -208,8 +208,8 @@ func main() {
 		}
 
 	case "--cluster-rebalance-nodes":
-		err := clusters.ClusterRebalanceNodes()
-		if err != nil {
+		result, err := clusters.ClusterRebalanceNodes()
+		if err != nil || result != 1 {
 			fmt.Printf("ERROR: %s\n", err.Error())
 			return
 		}

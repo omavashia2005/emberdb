@@ -18,8 +18,6 @@ import (
 
 	"github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
-	"github.com/go-delve/delve/pkg/dwarf/reader"
-	"github.com/go-playground/locales/ta"
 	"github.com/google/uuid"
 )
 
@@ -67,8 +65,8 @@ type ClusterNode struct {
 	OwnedSlots     [SLOT_WORDS]uint64
 	NumSlots       int
 	flags          int
-	t              tcp
-	link           *clusterLink
+	TCP            tcp
+	outbound       *clusterLink
 	inbound        *clusterLink
 	pongReceived   time.Time
 	pingSent       time.Time
@@ -324,7 +322,7 @@ func CreateClusterLink(conn net.Conn, node *ClusterNode, inbound bool) *clusterL
 		if inbound {
 			node.inbound = link
 		} else {
-			node.link = link
+			node.outbound = link
 		}
 	}
 
@@ -342,7 +340,7 @@ func ClusterStartHandshake(senderHost string, senderPort int) error {
 		flags:          CLUSTER_HANDSHAKE_NODE | CLUSTER_MEET_NODE,
 		ClientPort:     senderPort,
 		ClusterBusPort: senderCPort,
-		t: tcp{
+		TCP: tcp{
 			host: senderHost,
 			port: senderPort,
 		},
@@ -365,9 +363,7 @@ func ClusterStartHandshake(senderHost string, senderPort int) error {
 
 	link := CreateClusterLink(conn, node, false)
 
-	fmt.Println("[TRACE-A] about to call clusterSendPing")
 	clusterSendPing(link, CLUSTERMSG_TYPE_PING)
-	fmt.Println("[TRACE-B] clusterSendPing returned")
 
 	return nil
 }
@@ -442,7 +438,7 @@ func getRandomNode(nodes map[string]*ClusterNode) *ClusterNode {
 	return nil
 }
 
-func clusterSetGossipEntry(hdr *clusterMsg, i int, n *ClusterNode) {
+func clusterSetGossipEntry(hdr *clusterMsg, n *ClusterNode) {
 	gossip := &clusterMsgDataGossip{}
 
 	gossip.nodeName = n.Name
@@ -459,17 +455,17 @@ func clusterSetGossipEntry(hdr *clusterMsg, i int, n *ClusterNode) {
 		gossip.pongReceived = uint32(n.pongReceived.Unix())
 	}
 
-	gossip.port = uint16(n.t.port)
+	gossip.port = uint16(n.TCP.port)
 	gossip.cport = uint16(n.ClusterBusPort)
 	gossip.flags = uint16(n.flags)
 	hdr.Gossip = append(hdr.Gossip, gossip)
 
 }
 
-func clusterSendPing(link *clusterLink, Type int) {
+func clusterSendPing(link *clusterLink, messageType int) {
 
 	freshNodes := len(serverState.Nodes) - 2 // all  - (sender + reciever)
-	hdr := clusterMsgBuildHdr(Type)
+	hdr := clusterMsgBuildHdr(messageType)
 
 	// https://github.com/redis/redis/blob/4602d6e93e030efdc48f94dc2e3d3f9f32e7c72d/src/cluster_legacy.c#L3808-L3833
 	wanted := int(math.Floor(float64(len(serverState.Nodes) / 10)))
@@ -481,7 +477,7 @@ func clusterSendPing(link *clusterLink, Type int) {
 		wanted = freshNodes
 	}
 
-	if link.inbound && Type == CLUSTERMSG_TYPE_PING {
+	if link.inbound && messageType == CLUSTERMSG_TYPE_PING {
 		link.node.pingSent = time.Now()
 	}
 
@@ -503,13 +499,12 @@ func clusterSendPing(link *clusterLink, Type int) {
 		}
 
 		// omitting some states included in redis source
-		if curNode.flags&CLUSTER_HANDSHAKE_NODE != 0 || curNode.link == nil || curNode.NumSlots == 0 {
-			// freshNodes--
+		if curNode.flags&CLUSTER_HANDSHAKE_NODE != 0 || curNode.outbound == nil || curNode.NumSlots == 0 {
 			continue
 		}
 
 		selected[curNode.Name] = true
-		clusterSetGossipEntry(hdr, gossipCount, curNode)
+		clusterSetGossipEntry(hdr, curNode)
 		gossipCount++
 		freshNodes--
 	}
@@ -933,7 +928,7 @@ func ClusterCron(iterations int) {
 				continue
 			}
 
-			if node.link == nil || !node.pingSent.IsZero() {
+			if node.outbound == nil || !node.pingSent.IsZero() {
 				continue
 			}
 
@@ -951,7 +946,7 @@ func ClusterCron(iterations int) {
 
 		if minPongNode != nil {
 			fmt.Printf("[CRON] Pinging node %s\n", minPongNode.Name)
-			clusterSendPing(minPongNode.link, CLUSTERMSG_TYPE_PING)
+			clusterSendPing(minPongNode.outbound, CLUSTERMSG_TYPE_PING)
 		}
 
 	}
