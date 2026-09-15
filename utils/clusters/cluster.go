@@ -9,6 +9,8 @@ import (
 	"math/bits"
 	"math/rand/v2"
 	"net"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
+	"github.com/go-delve/delve/pkg/dwarf/reader"
+	"github.com/go-playground/locales/ta"
 	"github.com/google/uuid"
 )
 
@@ -68,6 +72,12 @@ type ClusterNode struct {
 	inbound        *clusterLink
 	pongReceived   time.Time
 	pingSent       time.Time
+	balance        int32
+}
+
+type clusterNodeRehardItem struct {
+	node *ClusterNode
+	slot uint64
 }
 
 type ClusterState struct {
@@ -692,6 +702,210 @@ func encodeClusterMsg(msg *clusterMsg) []byte {
 	}
 
 	return buf
+}
+
+func ClusterRebalanceNodes() (int, error) {
+
+	base := CLUSTER_SLOTS / len(serverState.Nodes)
+	remainder := CLUSTER_SLOTS % len(serverState.Nodes)
+	nodes := make([]*ClusterNode, 0, len(serverState.Nodes))
+
+	for _, node := range serverState.Nodes {
+		nodes = append(nodes, node)
+	}
+
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].Name < nodes[j].Name // stable criterion
+	})
+
+	for i, node := range nodes {
+
+		target := base
+		if i < remainder {
+			target++
+		}
+
+		node.balance = int32(node.NumSlots) - int32(target)
+
+	}
+
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].balance < nodes[j].balance
+	})
+
+	dstIdx := 0
+	srcIdx := len(nodes) - 1
+
+	result := 0
+
+	for dstIdx < srcIdx {
+
+		dstNode := nodes[dstIdx]
+		srcNode := nodes[srcIdx]
+		var numslots int
+
+		if dstNode.balance > srcNode.balance {
+			numslots = int(dstNode.balance)
+		} else {
+			numslots = int(srcNode.balance)
+		}
+
+		if numslots > 0 {
+			fmt.Printf(
+				"[REBALANCE] Moving %d slots from %s:%d to %s:%d\n",
+				numslots,
+				srcNode.Host,
+				srcNode.ClientPort,
+				dstNode.Host,
+				dstNode.ClientPort,
+			)
+
+			moved := clusterComputeReshardTable(numslots, srcNode)
+
+			if len(moved) != numslots {
+				if result == 0 {
+					return result, fmt.Errorf("[ERROR] RESHARD TABLE DOES NOT MATCH NUMBER OF SLOTS")
+				}
+
+				dstNode.balance += int32(numslots)
+				srcNode.balance -= int32(numslots)
+				if dstNode.balance == 0 {
+					dstNode.balance++
+				}
+				if srcNode.balance == 0 {
+					srcNode.balance--
+				}
+			}
+
+			slots := make([]uint64, len(moved))
+
+			for k, item := range moved {
+				slots[k] = item.slot
+			}
+
+			result, err := clusterAtomicMoveSlots(srcNode, dstNode, slots, len(slots))
+
+			if err != nil || result != 1 {
+				if result == 0 {
+					return result, fmt.Errorf("[ERROR] MOVING SLOTS %s", err.Error())
+				}
+				dstNode.balance += int32(numslots)
+				srcNode.balance -= int32(numslots)
+				if dstNode.balance == 0 {
+					dstNode.balance++
+				}
+				if srcNode.balance == 0 {
+					srcNode.balance--
+				}
+
+			}
+
+		}
+
+		dstIdx++
+	}
+
+	return result, nil
+}
+
+func clusterComputeReshardTable(numslots int, source *ClusterNode) []*clusterNodeRehardItem {
+
+	var moved []*clusterNodeRehardItem
+	count := 0
+	max := numslots
+
+	for slot := range CLUSTER_SLOTS {
+		word := slot / 64
+		bit := slot % 64
+
+		if source.OwnedSlots[word]&(uint64(1)<<bit) == 0 {
+			continue
+		}
+
+		if count >= max || len(moved) >= numslots {
+			break
+		}
+
+		movedItem := &clusterNodeRehardItem{
+			node: source,
+			slot: uint64(slot),
+		}
+
+		moved = append(moved, movedItem)
+
+		count++
+	}
+
+	return moved
+
+}
+
+func clusterAtomicMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, numslots int) (int, error) {
+
+	if numslots <= 0 {
+		return 1, nil
+	}
+
+	slices.Sort(slots)
+
+	args := make([]string, 3+numslots*2)
+	args[0] = "CLUSTER"
+	args[1] = "MIGRATE"
+	args[2] = "IMPORT"
+	argIdx := 0
+	start := slots[0]
+
+	for i := 1; i <= numslots; i++ {
+		if i == numslots || slots[i] != slots[i-1]+1 {
+			args[argIdx] = fmt.Sprintf("%d", start)
+			argIdx++
+			args[argIdx] = fmt.Sprintf("%d", slots[i-1])
+			argIdx++
+
+			if i < numslots {
+				start = slots[i]
+			}
+		}
+	}
+
+	conn, err := net.Dial("tcp", target.Host+":"+strconv.Itoa(target.ClientPort))
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	rconn := resp.NewServer(conn)
+	reader := resp3.NewReader(conn)
+	rconn.WriteArrayString(args[:argIdx])
+
+	v, _, err := reader.ReadValue()
+	if err != nil {
+		return 0, err
+	}
+
+	result := v.SmartResult()
+
+	switch r := result.(type) {
+	case string:
+		if r != "OK" {
+			return 0, fmt.Errorf("unexpected response: %s", r)
+		} else {
+			for i := range numslots {
+				word := i / 64
+				bit := i % 64
+				mask := uint64(1) << bit
+				source.OwnedSlots[word] &^= mask
+				target.OwnedSlots[word] |= mask
+			}
+			fmt.Printf("[DEBUG - ATOMIC_ADD_SLOT] TO PORT %d SUCCESSFUL!\n", target.ClientPort)
+		}
+	case error:
+		return 0, r
+	default:
+		return 0, fmt.Errorf("unexpected response: %#v", r)
+	}
+
+	return 1, nil
 }
 
 func InitClusterState(state *ClusterState) {

@@ -90,7 +90,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 	for {
 		args, err := rconn.Next()
-
 		if err != nil {
 			rconn.CloseWithError(err)
 			log.Printf("closed connection from %s during read: %v", conn.RemoteAddr(), err)
@@ -458,6 +457,16 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				fmt.Printf("[DEBUG-MEET] MEET TO PORT %d SUCCESSFUL\n", senderPort)
 
 				rconn.WriteOK()
+
+			case "MIGRATION IMPORT":
+				if len(args) != 4 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MIGRATION' command"))
+					continue
+				}
+
+				// TODO: Implement migration logic, and implement timeout + correct behavior for failure and success
+				// startSlot := string(args[1])
+				// endSlot := string(args[2])
 
 			default:
 				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))

@@ -18,8 +18,7 @@ import (
 
 	resp "github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
-
-	server "github.com/omavashia2005/emberdb/cmd/ember-server"
+	// server "github.com/omavashia2005/emberdb/cmd/ember-server"
 )
 
 type tcp struct {
@@ -203,57 +202,16 @@ func main() {
 			}
 
 		} else {
+			// --cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
 
-			/*
-				--cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
-			*/
-			if len(os.Args) != 4 {
-				fmt.Println("Invalid arguments for this command")
-				return
-			}
+			// TODO: Make this work for locally hosted clusters too
+		}
 
-			newNodeArg := string(os.Args[2])
-			existingNodeArg := string(os.Args[3])
-
-			newNodeHost, newNodePort, ok := strings.Cut(newNodeArg, ":")
-			if !ok {
-				fmt.Println("Invalid new node. Expected <name>:<port>")
-				return
-			}
-
-			existingNodeHost, existingNodePort, ok := strings.Cut(existingNodeArg, ":")
-			if !ok {
-				fmt.Println("Invalid existing node. Expected <name>:<port>")
-				return
-			}
-
-			go server.Run(newNodePort, newNodeHost, true)
-
-			newNodeConn, err := net.Dial(
-				"tcp",
-				net.JoinHostPort(newNodeHost, newNodePort),
-			)
-			if err != nil {
-				fmt.Printf("[ERROR - ADDNODE] %v\n", err)
-				return
-			}
-			defer newNodeConn.Close()
-
-			existingPort, err := strconv.Atoi(existingNodePort)
-			if err != nil {
-				fmt.Printf("[ERROR - ADDNODE] %v\n", err)
-				return
-			}
-
-			err = clusters.ClusterMeet(
-				newNodeConn,
-				existingPort,
-				existingNodeHost,
-			)
-			if err != nil {
-				fmt.Printf("[ERROR - ADDNODE] %v\n", err)
-				return
-			}
+	case "--cluster-rebalance-nodes":
+		err := clusters.ClusterRebalanceNodes()
+		if err != nil {
+			fmt.Printf("ERROR: %s\n", err.Error())
+			return
 		}
 
 	/*
