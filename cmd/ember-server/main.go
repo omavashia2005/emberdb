@@ -45,13 +45,10 @@ func toMoveorNotToMove(key string, rconn *resp.Server) string {
 	if start == -1 || end <= start+1 || end == -1 {
 		hash = crc16.ChecksumXModem([]byte(key))
 	} else {
-		fmt.Printf("[DEBUG - SET - TAGS] %s", key[start+1:end])
 		hash = crc16.ChecksumXModem([]byte(key[start+1 : end]))
 	}
 
 	slot := hash % 16384
-
-	fmt.Printf("[DEBUG - SLOT] %d", slot)
 
 	ownerNode := serverState.GetSlotOwner(int(slot))
 
@@ -62,7 +59,7 @@ func toMoveorNotToMove(key string, rconn *resp.Server) string {
 
 	if ownerNode != serverState.Self {
 		rconn.WriteStatusString(
-			fmt.Sprintf("MOVED %d %s", slot, ownerNode.Name),
+			fmt.Sprintf("MOVED %d %s", slot, ownerNode.GetName()),
 		)
 
 		return "MOVED"
@@ -105,11 +102,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 		case "ping":
 			if clusterEnabled {
-
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", serverState.Self.Name))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", serverState.Self.ClientPort))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", serverState.Self.ClusterBusPort))
-
+				self := serverState.Self.Snapshot()
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", self.Name))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", self.ClientPort))
+				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", self.ClusterBusPort))
 			} else {
 				rconn.WriteStatusString("PONG")
 			}
@@ -416,25 +412,22 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				}
 
-				fmt.Printf("[DEBUG] Adding slots %d - %d to node on port %d\n", slotStart, slotEnd, serverState.Self.ClientPort)
+				self := serverState.Self
 
 				serverState.Mu.Lock()
-				serverState.Self.NumSlots = 0
 				for slot := slotStart; slot <= slotEnd; slot++ {
-					word := slot / 64
-					bit := slot % 64
-					serverState.Self.OwnedSlots[word] |= uint64(1) << bit
-					serverState.Self.NumSlots++
-					serverState.Slots[slot] = serverState.Self
+					serverState.Slots[slot] = self
 				}
+				self.AddSlotRange(slotStart, slotEnd)
 				serverState.Mu.Unlock()
 
 				rconn.WriteOK()
 
 			case "MYADDR":
+				self := serverState.Self.Snapshot()
 				rconn.WriteArrayString([]string{
-					serverState.Self.Host,
-					strconv.Itoa(serverState.Self.ClientPort),
+					self.Host,
+					strconv.Itoa(self.ClientPort),
 				})
 
 			case "MEET":
@@ -452,8 +445,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				if err := clusters.ClusterStartHandshake(senderHost, senderPort); err != nil {
 					panic(fmt.Errorf("[ERROR] %+e", err))
 				}
-
-				fmt.Printf("[DEBUG-MEET] MEET TO PORT %d SUCCESSFUL\n", senderPort)
 
 				rconn.WriteOK()
 
@@ -496,14 +487,18 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 
 		clusters.InitClusterState(serverState)
 
-		self := clusters.NewNode(port, clusterHost)
-		serverState.Nodes[self.Name] = self
+		clientPort, err := strconv.Atoi(port)
+		if err != nil {
+			panic(fmt.Errorf("[ERROR] %e", err))
+		}
+		self := clusters.NewNode(clientPort, clusterHost, 0, false)
+		serverState.SetNode(self)
 		serverState.Self = self
 
 		// Cluster bus listener
 		clusterBusListener, err := net.Listen(
 			"tcp",
-			fmt.Sprintf(":%d", self.ClusterBusPort),
+			fmt.Sprintf(":%d", self.GetClusterBusPort()),
 		)
 		if err != nil {
 			panic(fmt.Errorf("[ERROR] %e", err))
@@ -517,11 +512,6 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 				if err != nil {
 					return
 				}
-
-				fmt.Printf(
-					"[CLUSTER] inbound connection from %s\n",
-					busConn.RemoteAddr(),
-				)
 
 				clusters.CreateClusterLink(busConn, nil, true)
 			}
