@@ -35,7 +35,7 @@ func bstring(bs []byte) string {
 
 var ps = pubsub.NewPubSub()
 
-func toMoveorNotToMove(key string, rconn *resp.Server) string {
+func toMoveorNotToMove(key string, rconn *resp.Server, kv *kvstore.KVStore) string {
 
 	start := strings.Index(key, "{")
 	end := strings.LastIndex(key, "}")
@@ -63,6 +63,10 @@ func toMoveorNotToMove(key string, rconn *resp.Server) string {
 		)
 
 		return "MOVED"
+	}
+
+	if err := kv.SetSlotKey(slot, key); err != nil{
+		return "ERROR"
 	}
 
 	return "OK"
@@ -130,7 +134,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := string(args[1])
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -146,7 +150,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			val := kv.Get(key)
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -166,7 +170,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			valueToAppend := string(args[1])
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -182,7 +186,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -202,7 +206,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			key := string(args[0])
 			incrByVal := string(args[1])
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -221,7 +225,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -241,7 +245,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			key := string(args[0])
 
-			if clusterEnabled && toMoveorNotToMove(key, rconn) != "OK" {
+			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
 
@@ -285,7 +289,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				// Since every key hashes to the same slot,
 				// checking the first key is sufficient.
-				if toMoveorNotToMove(firstKey, rconn) != "OK" {
+				if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
 					continue
 				}
 			}
@@ -327,7 +331,7 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 					continue
 				}
 
-				if toMoveorNotToMove(firstKey, rconn) != "OK" {
+				if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
 					continue
 				}
 			}

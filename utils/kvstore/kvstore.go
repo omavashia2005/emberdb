@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
 )
 
 type KVStore struct {
@@ -15,6 +14,7 @@ type KVStore struct {
 	mu                sync.RWMutex
 	CommandsProcessed int
 	Clients           map[string]net.Conn
+	SlotKeys          [16384]map[string]struct{}
 }
 
 func NewKVStore() *KVStore {
@@ -23,6 +23,7 @@ func NewKVStore() *KVStore {
 		Expirations:       make(map[string]time.Time),
 		CommandsProcessed: 0,
 		Clients:           make(map[string]net.Conn),
+		SlotKeys:          [16384]map[string]struct{}{},
 	}
 }
 
@@ -153,3 +154,28 @@ func (kv *KVStore) FlushAll() {
 
 }
 
+func (kv *KVStore) SetSlotKey(slot uint16, key string) error {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if kv.SlotKeys[slot] == nil {
+		kv.SlotKeys[slot] = make(map[string]struct{})
+		return nil
+	}
+
+	return fmt.Errorf("ERR setting slot key")
+}
+
+func (kv *KVStore) GetKeysInSlot(slot int, count int) []string {
+	keys := make([]string, 0, count)
+
+	for key := range kv.SlotKeys[slot] {
+		keys = append(keys, key)
+
+		if len(keys) == count {
+			break
+		}
+	}
+
+	return keys
+}

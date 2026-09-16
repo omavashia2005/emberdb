@@ -201,11 +201,10 @@ func main() {
 				return
 			}
 
-		} else {
-			// --cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
-
-			// TODO: Make this work for locally hosted clusters too
 		}
+		// --cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
+
+		// TODO: Make this work for locally hosted clusters too
 
 	case "--cluster-rebalance-nodes":
 		result, err := clusters.ClusterRebalanceNodes()

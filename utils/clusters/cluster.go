@@ -147,6 +147,7 @@ func clusterSendPing(link *clusterLink, messageType int) {
 	gossipCount := 0
 	maxIterations := wanted * 3
 	selected := make(map[string]bool)
+	excludeFlags := CLUSTER_HANDSHAKE_NODE
 
 	for freshNodes > 0 && gossipCount < wanted && maxIterations > 0 {
 		maxIterations--
@@ -163,7 +164,7 @@ func clusterSendPing(link *clusterLink, messageType int) {
 		}
 
 		// omitting some states included in redis source
-		if snapshot.Flags&CLUSTER_HANDSHAKE_NODE != 0 || snapshot.Outbound == nil || snapshot.NumSlots == 0 {
+		if snapshot.Flags&excludeFlags != 0 || snapshot.Outbound == nil || snapshot.NumSlots == 0 {
 			continue
 		}
 
@@ -255,7 +256,7 @@ func ClusterRebalanceNodes() (int, error) {
 				slots[k] = item.slot
 			}
 
-			result, err := clusterAtomicMoveSlots(srcNode, dstNode, slots, len(slots))
+			result, err := clusterMoveSlots(srcNode, dstNode, slots, len(slots))
 
 			if err != nil || result != 1 {
 				if result == 0 {
@@ -313,7 +314,7 @@ func clusterComputeReshardTable(numslots int, source *ClusterNode) []*clusterNod
 
 }
 
-func clusterAtomicMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, numslots int) (int, error) {
+func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, numslots int) (int, error) {
 
 	if numslots <= 0 {
 		return 1, nil
