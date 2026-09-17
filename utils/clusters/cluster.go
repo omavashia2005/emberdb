@@ -9,16 +9,19 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
+	"github.com/omavashia2005/emberdb/utils"
 )
 
 const (
-	CLUSTER_SLOTS         = 1 << 14            // 16384
-	SLOT_WORDS            = CLUSTER_SLOTS / 64 // 256
-	CLUSTER_BUS_PORT_INCR = 10000
+	CLUSTER_SLOTS              = 1 << 14            // 16384
+	SLOT_WORDS                 = CLUSTER_SLOTS / 64 // 256
+	CLUSTER_BUS_PORT_INCR      = 10000
+	CLUSTER_SETSLOT_BATCH_SIZE = 10
 
 	// flags
 	CLUSTER_HANDSHAKE_NODE = 32
@@ -89,25 +92,7 @@ func ClusterMeet(targetConn net.Conn, bootstrapPort int, bootstrapHost string) e
 		return err
 	}
 
-	v, _, err := reader.ReadValue()
-	if err != nil {
-		return err
-	}
-
-	result := v.SmartResult()
-
-	switch r := result.(type) {
-	case string:
-		if r != "OK" {
-			return fmt.Errorf("unexpected response: %s", r)
-		}
-	case error:
-		return r
-	default:
-		return fmt.Errorf("unexpected response: %#v", r)
-	}
-
-	return nil
+	return utils.ExpectStringResponse(reader, "OK")
 }
 
 func getRandomNode(nodes map[string]*ClusterNode) *ClusterNode {
@@ -319,62 +304,156 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 	if numslots <= 0 {
 		return 1, nil
 	}
+	if numslots > len(slots) {
+		return 0, fmt.Errorf("numslots exceeds provided slots")
+	}
 
 	slices.Sort(slots)
 
-	args := make([]string, 3+numslots*2)
-	args[0] = "CLUSTER"
-	args[1] = "MIGRATE"
-	args[2] = "IMPORT"
-	argIdx := 3
-	start := slots[0]
+	sourceSnap := source.Snapshot()
+	targetSnap := target.Snapshot()
 
-	for i := 1; i <= numslots; i++ {
-		if i == numslots || slots[i] != slots[i-1]+1 {
-			args[argIdx] = fmt.Sprintf("%d", start)
-			argIdx++
-			args[argIdx] = fmt.Sprintf("%d", slots[i-1])
-			argIdx++
+	targetConn, err := net.Dial("tcp", net.JoinHostPort(targetSnap.Host, strconv.Itoa(targetSnap.ClientPort)))
+	if err != nil {
+		return 0, err
+	}
+	defer targetConn.Close()
 
-			if i < numslots {
-				start = slots[i]
+	sourceConn, err := net.Dial("tcp", net.JoinHostPort(sourceSnap.Host, strconv.Itoa(sourceSnap.ClientPort)))
+	if err != nil {
+		return 0, err
+	}
+	defer sourceConn.Close()
+
+	sourceRConn := resp.NewServer(sourceConn)
+	targetRConn := resp.NewServer(targetConn)
+
+	defer targetRConn.Close()
+	defer sourceRConn.Close()
+
+	sourceReader := resp3.NewReader(sourceConn)
+	targetReader := resp3.NewReader(targetConn)
+
+	slots = slots[:numslots]
+
+	for _, slot := range slots {
+
+		targetRConn.WriteArrayString([]string{
+			"CLUSTER",
+			"SETSLOT",
+			strconv.FormatUint(slot, 10),
+			"IMPORTING",
+			sourceSnap.Name,
+		})
+
+		if err := utils.ExpectStringResponse(targetReader, "OK"); err != nil {
+			return 0, err
+		}
+
+		sourceRConn.WriteArrayString([]string{
+			"CLUSTER",
+			"SETSLOT",
+			strconv.FormatUint(slot, 10),
+			"MIGRATING",
+			targetSnap.Name,
+		})
+
+		if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
+			return 0, err
+		}
+
+		for {
+			sourceRConn.WriteArrayString([]string{
+				"CLUSTER",
+				"GETKEYSINSLOT",
+				strconv.FormatUint(slot, 10),
+				strconv.Itoa(CLUSTER_SETSLOT_BATCH_SIZE),
+			})
+
+			v, _, err := sourceReader.ReadValue()
+			if err != nil {
+				return 0, err
+			}
+
+			result := v.SmartResult()
+
+			keys, ok := result.([]string)
+			if !ok {
+				return 0, fmt.Errorf("unexpected GETKEYSINSLOT response")
+			}
+
+			if len(keys) == 0 {
+				break
+			}
+
+			sourceRConn.WriteArrayString([]string{
+				"CLUSTER",
+				"MIGRATE",
+				targetSnap.Host,
+				"KEYS",
+				strings.Join(keys, ","),
+			})
+
+			if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
+				return 0, fmt.Errorf("Error: %w", err)
+			}
+
+			// remove if and when cluster migrate command handles this
+			sourceRConn.WriteArrayString([]string{
+				"DELETE",
+				strings.Join(keys, ","),
+			})
+
+			if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
+				return 0, fmt.Errorf("Error: %w", err)
+			}
+
+		}
+
+		serverState.Mu.RLock()
+		nodes := make([]*ClusterNode, 0, len(serverState.Nodes))
+		for _, node := range serverState.Nodes {
+			nodes = append(nodes, node)
+		}
+		serverState.Mu.RUnlock()
+
+		for _, node := range nodes {
+
+			node := node.Snapshot()
+
+			nodeConn, err := net.Dial("tcp", net.JoinHostPort(node.Host, strconv.Itoa(node.ClientPort)))
+			if err != nil {
+				return 0, err
+			}
+
+			nodeRConn := resp.NewServer(nodeConn)
+
+			nodeRConn.WriteArrayString([]string{
+				"CLUSTER",
+				"SETSLOT",
+				strconv.FormatUint(slot, 10),
+				"NODE",
+				targetSnap.Name,
+			})
+
+			nodeReader := resp3.NewReader(nodeConn)
+
+			err = utils.ExpectStringResponse(nodeReader, "OK")
+			nodeConn.Close()
+			if err != nil {
+				return 0, fmt.Errorf("Error: %w", err)
 			}
 		}
-	}
 
-	targetSnapshot := target.Snapshot()
-	conn, err := net.Dial("tcp", targetSnapshot.Host+":"+strconv.Itoa(targetSnapshot.ClientPort))
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-
-	rconn := resp.NewServer(conn)
-	reader := resp3.NewReader(conn)
-	rconn.WriteArrayString(args[:argIdx])
-
-	v, _, err := reader.ReadValue()
-	if err != nil {
-		return 0, err
-	}
-
-	result := v.SmartResult()
-
-	switch r := result.(type) {
-	case string:
-		if r != "OK" {
-			return 0, fmt.Errorf("unexpected response: %s", r)
-		} else {
-			source.RemoveSlots(slots)
-			target.AddSlots(slots)
-		}
-	case error:
-		return 0, r
-	default:
-		return 0, fmt.Errorf("unexpected response: %#v", r)
 	}
 
 	return 1, nil
+}
+
+// handle source node key deletion too
+func ClusterMigrateKeys(keys []string) error {
+
+	return nil
 }
 
 func ClusterCron(iterations int) {

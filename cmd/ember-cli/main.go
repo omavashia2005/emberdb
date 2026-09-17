@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/shlex"
+	"github.com/omavashia2005/emberdb/utils"
 	"github.com/omavashia2005/emberdb/utils/clusters"
 
 	resp "github.com/Fusl/go-resp"
@@ -369,27 +370,11 @@ func main() {
 				strconv.Itoa(int(last)),
 			})
 
-			v, _, err := reader.ReadValue()
-			if err != nil {
-				panic(fmt.Errorf("[ERROR] %e", err))
-			}
-
-			result := v.SmartResult()
-
-			switch r := result.(type) {
-			case string:
-				if r == "OK" {
-					curNode.dirty = 0
-					fmt.Printf("Node %s configured successfully\n", curNode.ctx.TCP.sourceAddr)
-				} else {
-					fmt.Printf("unexpected response: %s\n", r)
-				}
-			case error:
-				fmt.Printf("server rejected command: %v\n", r)
-
-			default:
-				fmt.Printf("unexpected response: %#v\n", r)
-
+			if err := utils.ExpectStringResponse(reader, "OK"); err != nil {
+				fmt.Println(err)
+			} else {
+				curNode.dirty = 0
+				fmt.Printf("Node %s configured successfully\n", curNode.ctx.TCP.sourceAddr)
 			}
 
 			first = last + 1

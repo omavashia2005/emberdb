@@ -65,7 +65,7 @@ func toMoveorNotToMove(key string, rconn *resp.Server, kv *kvstore.KVStore) stri
 		return "MOVED"
 	}
 
-	if err := kv.SetSlotKey(slot, key); err != nil{
+	if err := kv.SetSlotKey(slot, key); err != nil {
 		return "ERROR"
 	}
 
@@ -386,6 +386,9 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				continue
 			}
 
+		case "delete":
+			// TODO: Implement deleting keys DELETE key OR DELETE [key1 key2 key3...]. Input will be string of keys that are comma separated
+
 		case "cluster":
 			if !clusterEnabled {
 				rconn.WriteError(fmt.Errorf("Clustering is not enabled"))
@@ -427,6 +430,15 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				rconn.WriteOK()
 
+			// TODO
+			case "GETKEYSINSLOT":
+
+				rconn.WriteArrayString([]string{
+					"SOME",
+					"WORDS",
+					"HERE",
+				})
+
 			case "MYADDR":
 				self := serverState.Self.Snapshot()
 				rconn.WriteArrayString([]string{
@@ -452,7 +464,8 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				rconn.WriteOK()
 
-			case "MIGRATION IMPORT":
+			// TODO
+			case "MIGRATE":
 				if len(args) != 4 {
 					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MIGRATION' command"))
 					continue
@@ -461,6 +474,9 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				// TODO: Implement migration logic, and implement timeout + correct behavior for failure and success
 				// startSlot := string(args[1])
 				// endSlot := string(args[2])
+
+			// TODO
+			case "SETSLOT":
 
 			default:
 				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))
