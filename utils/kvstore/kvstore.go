@@ -47,6 +47,20 @@ func (kv *KVStore) Get(key string) string {
 
 }
 
+func (kv *KVStore) Delete(key string) int {
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if val, ok := kv.Strings[key]; ok {
+		delete(kv.Strings, val)
+		return 1
+	}
+
+	return -1
+
+}
+
 func (kv *KVStore) Append(key, valueToAppend string) error {
 
 	kv.mu.Lock()

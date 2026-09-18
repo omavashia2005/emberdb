@@ -10,7 +10,9 @@ import (
 	"unsafe"
 
 	"github.com/Fusl/go-resp"
+	"github.com/bytechan/resp3"
 	"github.com/lobaro/crc16"
+	"github.com/omavashia2005/emberdb/utils"
 	"github.com/omavashia2005/emberdb/utils/clusters"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
 	"github.com/omavashia2005/emberdb/utils/pubsub"
@@ -387,7 +389,119 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 		case "delete":
-			// TODO: Implement deleting keys DELETE key OR DELETE [key1 key2 key3...]. Input will be string of keys that are comma separated
+			if len(args) == 1 {
+				key := string(args[0])
+
+				if kv.Delete(key) != 1 {
+					rconn.WriteError(fmt.Errorf("ERROR deleting key\n"))
+					continue
+				}
+
+			} else {
+				for _, k := range args {
+					key := string(k)
+
+					if kv.Delete(key) != 1 {
+						rconn.WriteError(fmt.Errorf("ERROR deleting key\n"))
+						continue
+					}
+
+				}
+			}
+
+			rconn.WriteOK()
+
+		// TODO
+		case "getkeysinslot":
+
+			rconn.WriteArrayString([]string{
+				"SOME",
+				"WORDS",
+				"HERE",
+			})
+
+			continue
+
+		case "restore-asking":
+			if len(args) != 3 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'RESTORE-ASKING' command"))
+				continue
+			}
+
+			key, dump := string(args[0]), string(args[3]) // todo ADD TTL as second arg once TTL is implemented
+
+			value, err := clusters.RestoreDataFromBinaryDump(dump)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				continue
+			}
+
+			kv.Set(key, value)
+
+			rconn.WriteOK()
+		
+		// TODO
+		case "setslot":
+			if err := clusters.ClusterSetSlot(args); err != nil {
+				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				continue
+			}
+
+			rconn.WriteString("OK")
+
+		case "migrate":
+			if len(args) != 6 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MIGRATE' command"))
+				continue
+			}
+
+			targetHost, targetPort := string(args[0]), string(args[1])
+
+			if string(args[5]) != "KEYS" {
+				rconn.WriteError(fmt.Errorf("INVALID MIGRATE COMMAND SYNTAX"))
+				continue
+			}
+
+			targetKeys := make([]string, len(args[6:]))
+
+			for i, key := range args[6:] {
+				targetKeys[i] = string(key)
+			}
+
+			for _, key := range targetKeys {
+				val := kv.Get(key)
+				dump := clusters.EncodeBinaryDump(val)
+
+				targetConn, err := net.Dial("tcp", net.JoinHostPort(targetHost, targetPort))
+				if err != nil {
+					rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+					continue
+				}
+				targetRconn := resp.NewServer(targetConn)
+				targetReader := resp3.NewReader(targetConn)
+				targetRconn.WriteArrayString([]string{
+					"RESTORE-ASKING",
+					key,
+					"5000",
+					dump,
+				})
+
+				if err := utils.ExpectStringResponse(targetReader, "OK"); err != nil {
+					rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+					targetConn.Close()
+					continue
+				} else {
+					if kv.Delete(key) != 1 {
+						rconn.WriteError(fmt.Errorf("ERR DELETING KEY"))
+						targetConn.Close()
+						continue
+					}
+				}
+
+				targetConn.Close()
+			}
+
+			rconn.WriteOK()
 
 		case "cluster":
 			if !clusterEnabled {
@@ -430,15 +544,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 				rconn.WriteOK()
 
-			// TODO
-			case "GETKEYSINSLOT":
-
-				rconn.WriteArrayString([]string{
-					"SOME",
-					"WORDS",
-					"HERE",
-				})
-
 			case "MYADDR":
 				self := serverState.Self.Snapshot()
 				rconn.WriteArrayString([]string{
@@ -463,20 +568,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				}
 
 				rconn.WriteOK()
-
-			// TODO
-			case "MIGRATE":
-				if len(args) != 4 {
-					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MIGRATION' command"))
-					continue
-				}
-
-				// TODO: Implement migration logic, and implement timeout + correct behavior for failure and success
-				// startSlot := string(args[1])
-				// endSlot := string(args[2])
-
-			// TODO
-			case "SETSLOT":
 
 			default:
 				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))

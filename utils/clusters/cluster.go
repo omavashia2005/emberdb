@@ -22,6 +22,7 @@ const (
 	SLOT_WORDS                 = CLUSTER_SLOTS / 64 // 256
 	CLUSTER_BUS_PORT_INCR      = 10000
 	CLUSTER_SETSLOT_BATCH_SIZE = 10
+	MIGRATE_TIMEOUT            = 5000
 
 	// flags
 	CLUSTER_HANDSHAKE_NODE = 32
@@ -386,13 +387,19 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 				break
 			}
 
-			sourceRConn.WriteArrayString([]string{
-				"CLUSTER",
+			args := []string{
 				"MIGRATE",
 				targetSnap.Host,
+				strconv.Itoa(targetSnap.ClientPort),
+				"",
+				"0",
+				strconv.Itoa(MIGRATE_TIMEOUT),
 				"KEYS",
-				strings.Join(keys, ","),
-			})
+			}
+
+			args = append(args, keys...)
+
+			sourceRConn.WriteArrayString(args)
 
 			if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
 				return 0, fmt.Errorf("Error: %w", err)
@@ -450,12 +457,54 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 	return 1, nil
 }
 
-// handle source node key deletion too
-func ClusterMigrateKeys(keys []string) error {
 
-	return nil
+// NOT READY YET, THIS IS JUST A  STUB
+func ClusterSetSlot(args [][]byte) error {
+	if len(args) != 5 {
+		return fmt.Errorf("invalid CLUSTER SETSLOT arguments")
+	}
+
+	slot, err := strconv.Atoi(string(args[2]))
+	if err != nil {
+		return fmt.Errorf("invalid slot")
+	}
+
+	state := strings.ToLower(string(args[3]))
+	nodeID := string(args[4])
+
+	switch state {
+	case "importing":
+		// Minimal stub for now.
+		// Later:
+		// serverState.ImportingSlotsFrom[slot] = node
+		return nil
+
+	case "migrating":
+		// Minimal stub for now.
+		// Later:
+		// serverState.MigratingSlotsTo[slot] = node
+		return nil
+
+	case "node":
+		serverState.Mu.Lock()
+		defer serverState.Mu.Unlock()
+
+		node, ok := serverState.Nodes[nodeID]
+		if !ok {
+			return fmt.Errorf("unknown node %s", nodeID)
+		}
+
+		serverState.Slots[slot] = node
+
+		// For now you can deal with updating OwnedSlots separately
+		// if your existing code already handles that.
+
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported SETSLOT state %s", state)
+	}
 }
-
 func ClusterCron(iterations int) {
 
 	minPong := time.Time{}
