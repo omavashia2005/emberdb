@@ -91,14 +91,14 @@ func (n *ClusterNode) SetOwnedSlots(slots [SLOT_WORDS]uint64) {
 	n.OwnedSlots = slots
 	n.NumSlots = countSlots(slots)
 }
-func (n *ClusterNode) AddSlots(slots []uint64) {
+
+func (n *ClusterNode) AddSlot(slot uint64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	for _, slot := range slots {
-		n.OwnedSlots[slot/64] |= uint64(1) << (slot % 64)
-	}
+	n.OwnedSlots[slot/64] |= uint64(1) << (slot % 64)
 	n.NumSlots = countSlots(n.OwnedSlots)
 }
+
 func (n *ClusterNode) AddSlotRange(start, end int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -107,12 +107,10 @@ func (n *ClusterNode) AddSlotRange(start, end int) {
 	}
 	n.NumSlots = countSlots(n.OwnedSlots)
 }
-func (n *ClusterNode) RemoveSlots(slots []uint64) {
+func (n *ClusterNode) RemoveSlot(slot uint64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	for _, slot := range slots {
-		n.OwnedSlots[slot/64] &^= uint64(1) << (slot % 64)
-	}
+	n.OwnedSlots[slot/64] &^= uint64(1) << (slot % 64)	
 	n.NumSlots = countSlots(n.OwnedSlots)
 }
 func (n *ClusterNode) GetNumSlots() int {
@@ -197,4 +195,11 @@ func (n *ClusterNode) Snapshot() NodeSnapshot {
 		PingSent:       n.pingSent,
 		PongReceived:   n.pongReceived,
 	}
+}
+
+func (n *ClusterNode) TransferSlot(from *ClusterNode, slot uint64) {
+	from.OwnedSlots[slot/64] &^= uint64(1) << (slot % 64)	
+	from.NumSlots = countSlots(from.OwnedSlots)
+	n.OwnedSlots[slot/64] |= uint64(1) << (slot % 64)
+	n.NumSlots = countSlots(n.OwnedSlots)
 }

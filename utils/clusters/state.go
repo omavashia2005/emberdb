@@ -3,12 +3,14 @@ package clusters
 import "sync"
 
 type ClusterState struct {
-	Self  *ClusterNode
-	Nodes map[string]*ClusterNode // ID to node mapping
-	Host  string
-	Slots [CLUSTER_SLOTS]*ClusterNode // Global array for slot ownership
-	State int
-	Mu    sync.RWMutex
+	Self      *ClusterNode
+	Nodes     map[string]*ClusterNode // ID to node mapping
+	Host      string
+	Slots     [CLUSTER_SLOTS]*ClusterNode // Global array for slot ownership
+	State     int
+	Importing map[int]*ClusterNode
+	Migrating map[int]*ClusterNode
+	Mu        sync.RWMutex
 }
 
 var serverState *ClusterState
@@ -77,4 +79,40 @@ func (s *ClusterState) GetSlotOwner(slot int) *ClusterNode {
 	}
 
 	return nil
+}
+func (s *ClusterState) SetSlotStable(slot int) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	delete(s.Importing, slot)
+	delete(s.Migrating, slot)
+
+	return nil
+}
+func (s *ClusterState) ImportingSlotsFrom(slot int, node *ClusterNode) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	s.Importing[slot] = node
+
+	return nil
+}
+
+func (s *ClusterState) MigratingSlotsTo(slot int, node *ClusterNode) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	s.Migrating[slot] = node
+
+	return nil
+}
+
+func (s *ClusterState) GetNodeFromSlot(slot uint64) *ClusterNode {
+
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+
+	node := s.Slots[slot]
+
+	return node
 }

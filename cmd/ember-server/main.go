@@ -440,14 +440,13 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			rconn.WriteOK()
 		
-		// TODO
 		case "setslot":
 			if err := clusters.ClusterSetSlot(args); err != nil {
 				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
 				continue
 			}
 
-			rconn.WriteString("OK")
+			rconn.WriteOK()
 
 		case "migrate":
 			if len(args) != 6 {

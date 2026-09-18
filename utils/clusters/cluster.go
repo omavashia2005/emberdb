@@ -417,16 +417,37 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 
 		}
 
-		serverState.Mu.RLock()
-		nodes := make([]*ClusterNode, 0, len(serverState.Nodes))
-		for _, node := range serverState.Nodes {
-			nodes = append(nodes, node)
+		targetRConn.WriteArrayString([]string{
+			"CLUSTER",
+			"SETSLOT",
+			strconv.FormatUint(slot, 10),
+			"NODE",
+			targetSnap.Name,
+		})
+		if err := utils.ExpectStringResponse(targetReader, "OK"); err != nil {
+			return 0, fmt.Errorf("Error: %w", err)
 		}
-		serverState.Mu.RUnlock()
+
+		sourceRConn.WriteArrayString([]string{
+			"CLUSTER",
+			"SETSLOT",
+			strconv.FormatUint(slot, 10),
+			"NODE",
+			targetSnap.Name,
+		})
+		if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
+			return 0, fmt.Errorf("Error: %w", err)
+		}
+
+		nodes := serverState.GetNodes()
 
 		for _, node := range nodes {
 
 			node := node.Snapshot()
+
+			if node.Name == targetSnap.Name || node.Name == sourceSnap.Name {
+				continue
+			}
 
 			nodeConn, err := net.Dial("tcp", net.JoinHostPort(node.Host, strconv.Itoa(node.ClientPort)))
 			if err != nil {
@@ -457,47 +478,73 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 	return 1, nil
 }
 
-
-// NOT READY YET, THIS IS JUST A  STUB
 func ClusterSetSlot(args [][]byte) error {
-	if len(args) != 5 {
+
+	if len(args) == 3 {
+
+		if string(args[2]) != "stable" {
+			return fmt.Errorf("invalid CLUSTER SETSLOT arguments")
+		}
+
+		slot, err := strconv.Atoi(string(args[1]))
+		if err != nil {
+			return fmt.Errorf("invalid slot")
+		}
+
+		if slot < 0 || slot > 16383 {
+			return fmt.Errorf("invalid slot range")
+		}
+
+		serverState.SetSlotStable(slot)
+
+		return nil
+
+	}
+
+	if len(args) != 4 {
 		return fmt.Errorf("invalid CLUSTER SETSLOT arguments")
 	}
 
-	slot, err := strconv.Atoi(string(args[2]))
+	slot, err := strconv.Atoi(string(args[1]))
 	if err != nil {
 		return fmt.Errorf("invalid slot")
 	}
 
-	state := strings.ToLower(string(args[3]))
-	nodeID := string(args[4])
+	if slot < 0 || slot > 16383 {
+		return fmt.Errorf("invalid slot range")
+	}
+
+	state := strings.ToLower(string(args[2]))
+	nodeID := string(args[3])
+	node, ok := serverState.GetNode(nodeID)
+
+	if !ok {
+		return fmt.Errorf("unknown node %s", nodeID)
+	}
 
 	switch state {
 	case "importing":
-		// Minimal stub for now.
-		// Later:
-		// serverState.ImportingSlotsFrom[slot] = node
+		if err := serverState.ImportingSlotsFrom(slot, node); err != nil {
+			return fmt.Errorf("Error importing slots: %s", err)
+		}
 		return nil
 
 	case "migrating":
-		// Minimal stub for now.
-		// Later:
-		// serverState.MigratingSlotsTo[slot] = node
+		if err := serverState.MigratingSlotsTo(slot, node); err != nil {
+			return fmt.Errorf("Error migrating slots: %s", err)
+		}
 		return nil
 
 	case "node":
-		serverState.Mu.Lock()
-		defer serverState.Mu.Unlock()
-
-		node, ok := serverState.Nodes[nodeID]
-		if !ok {
-			return fmt.Errorf("unknown node %s", nodeID)
+		ownerNode := serverState.GetNodeFromSlot(uint64(slot))
+		if ownerNode == nil {
+			return fmt.Errorf("No node found for slot %d", slot)
 		}
-
-		serverState.Slots[slot] = node
-
-		// For now you can deal with updating OwnedSlots separately
-		// if your existing code already handles that.
+		serverState.Mu.Lock()
+		node.TransferSlot(ownerNode, uint64(slot))
+		delete(serverState.Importing, slot)
+		delete(serverState.Migrating, slot)
+		serverState.Mu.Unlock()
 
 		return nil
 
@@ -505,6 +552,7 @@ func ClusterSetSlot(args [][]byte) error {
 		return fmt.Errorf("unsupported SETSLOT state %s", state)
 	}
 }
+
 func ClusterCron(iterations int) {
 
 	minPong := time.Time{}
