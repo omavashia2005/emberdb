@@ -163,11 +163,6 @@ func clusterSendPing(link *clusterLink, messageType int) {
 			continue
 		}
 
-		// omitting some states included in redis source
-		// if snapshot.Flags&excludeFlags != 0 || snapshot.Outbound == nil {
-		// 	continue
-		// }
-
 		selected[snapshot.Name] = true
 		clusterSetGossipEntry(hdr, snapshot)
 		gossipCount++

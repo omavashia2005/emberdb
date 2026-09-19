@@ -455,7 +455,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 		case "setslot":
 			if err := clusters.ClusterSetSlot(args); err != nil {
-				fmt.Printf("[DEBUG] STATE: %+v\n", serverState)
 				rconn.WriteError(fmt.Errorf("SETSLOT ERROR: %w", err))
 				continue
 			}
