@@ -244,7 +244,7 @@ func main() {
 				return
 			}
 
-			time.Sleep(10000)
+			time.Sleep(10 * time.Second)
 		}
 		// --cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
 

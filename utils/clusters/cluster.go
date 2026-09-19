@@ -39,6 +39,21 @@ func countSlots(slots [SLOT_WORDS]uint64) int {
 	return count
 }
 
+func writeClusterCommand(conn net.Conn, args []string) error {
+	buf := make([]byte, 0, 16+len(args)*16)
+	buf = append(buf, '*')
+	buf = strconv.AppendInt(buf, int64(len(args)), 10)
+	buf = append(buf, '\r', '\n')
+	for _, arg := range args {
+		buf = append(buf, '$')
+		buf = strconv.AppendInt(buf, int64(len(arg)), 10)
+		buf = append(buf, '\r', '\n')
+		buf = append(buf, arg...)
+		buf = append(buf, '\r', '\n')
+	}
+	return writeFull(conn, buf)
+}
+
 func CreateClusterLink(conn net.Conn, node *ClusterNode, inbound bool) *clusterLink {
 	link := newClusterLink(conn, node, inbound)
 
@@ -200,6 +215,12 @@ func ClusterRebalanceNodes(stateNodes map[string]*ClusterNode) (int, error) {
 		node.SetBalance(int32(node.GetNumSlots()) - int32(target))
 
 	}
+	totalSlots := 0
+	for _, node := range nodes {
+		if balance := node.GetBalance(); balance > 0 {
+			totalSlots += int(balance)
+		}
+	}
 
 	sort.Slice(nodes, func(i, j int) bool {
 		return nodes[i].GetBalance() < nodes[j].GetBalance()
@@ -209,6 +230,7 @@ func ClusterRebalanceNodes(stateNodes map[string]*ClusterNode) (int, error) {
 	srcIdx := len(nodes) - 1
 
 	result := 0
+	movedSlots := 0
 
 	for dstIdx < srcIdx {
 
@@ -248,7 +270,7 @@ func ClusterRebalanceNodes(stateNodes map[string]*ClusterNode) (int, error) {
 
 			fmt.Printf("Moving %d slots from %s to %s\n", len(slots), srcNode.GetName(), dstNode.GetName())
 			fmt.Printf("[rebalance] begin transfer: %s -> %s (%d slots)\n", srcNode.GetName(), dstNode.GetName(), len(slots))
-			moveResult, err := clusterMoveSlots(srcNode, dstNode, slots, len(slots), stateNodes)
+			moveResult, err := clusterMoveSlots(srcNode, dstNode, slots, len(slots), movedSlots, totalSlots, stateNodes)
 			if err != nil {
 				return 0, fmt.Errorf("move %d slots from %s to %s: %w", len(slots), srcNode.GetName(), dstNode.GetName(), err)
 			}
@@ -256,6 +278,7 @@ func ClusterRebalanceNodes(stateNodes map[string]*ClusterNode) (int, error) {
 				return 0, fmt.Errorf("move slots from %s to %s returned result %d", srcNode.GetName(), dstNode.GetName(), moveResult)
 			}
 			result = moveResult
+			movedSlots += len(slots)
 			fmt.Printf("[rebalance] transfer complete: %s -> %s (%d slots)\n", srcNode.GetName(), dstNode.GetName(), len(slots))
 
 		}
@@ -300,7 +323,7 @@ func clusterComputeReshardTable(numslots int, source *ClusterNode) []*clusterNod
 
 }
 
-func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, numslots int, nodes map[string]*ClusterNode) (int, error) {
+func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, numslots, movedSlots, totalSlots int, nodes map[string]*ClusterNode) (int, error) {
 
 	if numslots <= 0 {
 		return 1, nil
@@ -336,25 +359,22 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 	}
 	defer sourceConn.Close()
 
-	sourceRConn := resp.NewServer(sourceConn)
-	targetRConn := resp.NewServer(targetConn)
-
-	defer targetRConn.Close()
-	defer sourceRConn.Close()
-
 	sourceReader := resp3.NewReader(sourceConn)
 	targetReader := resp3.NewReader(targetConn)
 
 	slots = slots[:numslots]
 
 	fmt.Printf("[rebalance] connections ready: source=%s target=%s\n", sourceSnap.Name, targetSnap.Name)
+	defer fmt.Print("\n")
 
 	for slotIndex, slot := range slots {
-		progress := fmt.Sprintf("slot %d/%d (%d)", slotIndex+1, len(slots), slot)
-		fmt.Printf("[rebalance] %s: begin\n", progress)
+		progress := func(phase string) {
+			utils.ShowRebalanceProgress(sourceSnap.Name, targetSnap.Name, movedSlots+slotIndex+1, totalSlots, slotIndex+1, len(slots), slot, phase)
+		}
+		progress("begin")
 
-		fmt.Printf("[rebalance] %s: mark target importing\n", progress)
-		if err := targetRConn.WriteArrayString([]string{
+		progress("mark target importing")
+		if err := writeClusterCommand(targetConn, []string{
 			"SETSLOT",
 			strconv.FormatUint(slot, 10),
 			"IMPORTING",
@@ -366,10 +386,10 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 		if err := utils.ExpectStringResponse(targetReader, "OK"); err != nil {
 			return 0, fmt.Errorf("mark slot %d importing on target node %s: %w", slot, targetSnap.Name, err)
 		}
-		fmt.Printf("[rebalance] %s: target importing complete\n", progress)
+		progress("target importing complete")
 
-		fmt.Printf("[rebalance] %s: mark source migrating\n", progress)
-		if err := sourceRConn.WriteArrayString([]string{
+		progress("mark source migrating")
+		if err := writeClusterCommand(sourceConn, []string{
 			"SETSLOT",
 			strconv.FormatUint(slot, 10),
 			"MIGRATING",
@@ -381,13 +401,13 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 		if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
 			return 0, fmt.Errorf("mark slot %d migrating on source %s to %s: %w", slot, sourceSnap.Name, targetSnap.Name, err)
 		}
-		fmt.Printf("[rebalance] %s: source migrating complete\n", progress)
+		progress("source migrating complete")
 
 		batch := 0
 		for {
 			batch++
-			fmt.Printf("[rebalance] %s batch %d: request keys\n", progress, batch)
-			if err := sourceRConn.WriteArrayString([]string{
+			progress(fmt.Sprintf("batch %d: request keys", batch))
+			if err := writeClusterCommand(sourceConn, []string{
 				"GETKEYSINSLOT",
 				strconv.FormatUint(slot, 10),
 				strconv.Itoa(CLUSTER_SETSLOT_BATCH_SIZE),
@@ -426,7 +446,7 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 
 				keys = append(keys, key)
 			}
-			fmt.Printf("[rebalance] %s batch %d: received %d keys\n", progress, batch, len(keys))
+			progress(fmt.Sprintf("batch %d: received %d keys", batch, len(keys)))
 			if len(keys) == 0 {
 				break
 			}
@@ -443,31 +463,31 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 
 			args = append(args, keys...)
 
-			if err := sourceRConn.WriteArrayString(args); err != nil {
+			if err := writeClusterCommand(sourceConn, args); err != nil {
 				return 0, fmt.Errorf("send MIGRATE for slot %d from %s to %s: %w", slot, sourceSnap.Name, targetSnap.Name, err)
 			}
 
 			if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
 				return 0, fmt.Errorf("migrate keys in slot %d from %s to %s: %w", slot, sourceSnap.Name, targetSnap.Name, err)
 			}
-			fmt.Printf("[rebalance] %s batch %d: migrate complete\n", progress, batch)
+			progress(fmt.Sprintf("batch %d: migrate complete", batch))
 
 			deleteArgs := []string{"DELETE"}
 			deleteArgs = append(deleteArgs, keys...)
 
-			if err := sourceRConn.WriteArrayString(deleteArgs); err != nil {
+			if err := writeClusterCommand(sourceConn, deleteArgs); err != nil {
 				return 0, fmt.Errorf("delete migrated keys from source node %s for slot %d: %w", sourceSnap.Name, slot, err)
 			}
 
 			if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
 				return 0, fmt.Errorf("delete migrated keys from %s in slot %d: %w", sourceSnap.Name, slot, err)
 			}
-			fmt.Printf("[rebalance] %s batch %d: delete complete\n", progress, batch)
+			progress(fmt.Sprintf("batch %d: delete complete", batch))
 
 		}
 
-		fmt.Printf("[rebalance] %s: assign target ownership\n", progress)
-		if err := targetRConn.WriteArrayString([]string{
+		progress("assign target ownership")
+		if err := writeClusterCommand(targetConn, []string{
 			"SETSLOT",
 			strconv.FormatUint(slot, 10),
 			"NODE",
@@ -479,7 +499,7 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 			return 0, fmt.Errorf("set slot %d owner to %s on target node: %w", slot, targetSnap.Name, err)
 		}
 
-		if err := sourceRConn.WriteArrayString([]string{
+		if err := writeClusterCommand(sourceConn, []string{
 			"SETSLOT",
 			strconv.FormatUint(slot, 10),
 			"NODE",
@@ -490,7 +510,7 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 		if err := utils.ExpectStringResponse(sourceReader, "OK"); err != nil {
 			return 0, fmt.Errorf("set slot %d owner to %s on source node %s: %w", slot, targetSnap.Name, sourceSnap.Name, err)
 		}
-		fmt.Printf("[rebalance] %s: ownership updated\n", progress)
+		progress("ownership updated")
 
 		for name, node := range nodes {
 			if node == nil {
@@ -505,7 +525,7 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 			if node.Host == "" {
 				return 0, fmt.Errorf("cannot update slot %d on node %s: host is empty", slot, node.Name)
 			}
-			fmt.Printf("[rebalance] %s: update cluster node %s\n", progress, node.Name)
+			progress(fmt.Sprintf("update cluster node %s", node.Name))
 
 			nodeAddr := net.JoinHostPort(node.Host, strconv.Itoa(node.ClientPort))
 			nodeConn, err := net.Dial("tcp", nodeAddr)
@@ -513,9 +533,7 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 				return 0, fmt.Errorf("connect to node %s at %s to update slot %d: %w", node.Name, nodeAddr, slot, err)
 			}
 
-			nodeRConn := resp.NewServer(nodeConn)
-
-			if err := nodeRConn.WriteArrayString([]string{
+			if err := writeClusterCommand(nodeConn, []string{
 				"SETSLOT",
 				strconv.FormatUint(slot, 10),
 				"NODE",
@@ -532,9 +550,9 @@ func clusterMoveSlots(source *ClusterNode, target *ClusterNode, slots []uint64, 
 			if err != nil {
 				return 0, fmt.Errorf("update slot %d on node %s: %w", slot, node.Name, err)
 			}
-			fmt.Printf("[rebalance] %s: cluster node %s updated\n", progress, node.Name)
+			progress(fmt.Sprintf("cluster node %s updated", node.Name))
 		}
-		fmt.Printf("[rebalance] %s: complete\n", progress)
+		progress("complete")
 
 	}
 
