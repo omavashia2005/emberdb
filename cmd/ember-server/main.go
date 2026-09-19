@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -411,16 +412,28 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			rconn.WriteOK()
 
-		// TODO
 		case "getkeysinslot":
+			if len(args) != 2 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'GETKEYSINSLOT' command"))
+				continue
+			}
 
-			rconn.WriteArrayString([]string{
-				"SOME",
-				"WORDS",
-				"HERE",
-			})
+			s, b := string(args[0]), string(args[1])
+			slot, err := strconv.Atoi(s)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("Error converting slot to int %s", err))
+				continue
+			}
+			batchSize, err := strconv.Atoi(b)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("Error converting batchSize to int %s", err))
+				continue
+			}
 
-			continue
+			keys := make([]string, 0)
+			keys = kv.GetKeysInSlot(uint64(slot), int(batchSize))
+
+			rconn.WriteArrayString(keys)
 
 		case "restore-asking":
 			if len(args) != 3 {
@@ -432,17 +445,18 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 
 			value, err := clusters.RestoreDataFromBinaryDump(dump)
 			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				rconn.WriteError(fmt.Errorf("RESTORE ASKING ERROR: %w", err))
 				continue
 			}
 
 			kv.Set(key, value)
 
 			rconn.WriteOK()
-		
+
 		case "setslot":
 			if err := clusters.ClusterSetSlot(args); err != nil {
-				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				fmt.Printf("[DEBUG] STATE: %+v\n", serverState)
+				rconn.WriteError(fmt.Errorf("SETSLOT ERROR: %w", err))
 				continue
 			}
 
@@ -514,6 +528,36 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			switch string(args[0]) {
+
+			case "NODES":
+				if serverState == nil {
+					rconn.WriteError(fmt.Errorf("cluster state is not initialized"))
+					continue
+				}
+				nodes := serverState.GetNodes()
+				snapshots := make(map[string]clusters.NodeSnapshot, len(nodes))
+				var nilNode string
+				nilNodeFound := false
+				for name, node := range nodes {
+					if node == nil {
+						nilNode = name
+						nilNodeFound = true
+						break
+					}
+					snapshots[name] = node.Snapshot()
+				}
+				if nilNodeFound {
+					rconn.WriteError(fmt.Errorf("cluster node %q is nil", nilNode))
+					continue
+				}
+				payload, err := json.Marshal(snapshots)
+				if err != nil {
+					rconn.WriteError(fmt.Errorf("encode cluster nodes: %w", err))
+					continue
+				}
+				if err := rconn.WriteString(string(payload)); err != nil {
+					return
+				}
 
 			case "ADDSLOTSRANGE":
 
@@ -593,6 +637,8 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 	if clusterEnabled {
 		serverState = &clusters.ClusterState{
 			Nodes: make(map[string]*clusters.ClusterNode),
+			Migrating: make(map[int]*clusters.ClusterNode),
+			Importing: make(map[int]*clusters.ClusterNode),
 		}
 
 		clusters.InitClusterState(serverState)

@@ -180,7 +180,7 @@ func (kv *KVStore) SetSlotKey(slot uint16, key string) error {
 	return fmt.Errorf("ERR setting slot key")
 }
 
-func (kv *KVStore) GetKeysInSlot(slot int, count int) []string {
+func (kv *KVStore) GetKeysInSlot(slot uint64, count int) []string {
 	keys := make([]string, 0, count)
 
 	for key := range kv.SlotKeys[slot] {

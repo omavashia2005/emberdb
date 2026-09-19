@@ -2,6 +2,7 @@ package clusters
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 )
@@ -98,7 +99,11 @@ func clusterProcessMsg(link *clusterLink, msg *clusterMsg) {
 			node.SetOwnedSlots(slots)
 		}
 	} else {
-		node = NewNode(int(msg.GetClientPort()), "", int(msg.GetFlags()), false)
+		host := ""
+		if conn := link.GetConnection(); conn != nil && conn.RemoteAddr() != nil {
+			host, _, _ = net.SplitHostPort(conn.RemoteAddr().String())
+		}
+		node = NewNode(int(msg.GetClientPort()), host, int(msg.GetFlags()), false)
 		node.UpdateMessage(
 			msg.GetSender(),
 			int(msg.GetClientPort()),

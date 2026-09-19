@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net"
@@ -44,6 +45,47 @@ type cliNode struct {
 	conn        net.Conn
 	clusterHost string
 	clusterPort int
+}
+
+func readClusterNodes(addr string) (map[string]*clusters.ClusterNode, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("connect to %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	rconn := resp.NewServer(conn)
+	if err := rconn.WriteArrayString([]string{"CLUSTER", "NODES"}); err != nil {
+		return nil, fmt.Errorf("send CLUSTER NODES to %s: %w", addr, err)
+	}
+	v, _, err := resp3.NewReader(conn).ReadValue()
+	if err != nil {
+		return nil, fmt.Errorf("read CLUSTER NODES from %s: %w", addr, err)
+	}
+	payload, ok := v.SmartResult().(string)
+	if !ok {
+		return nil, fmt.Errorf("CLUSTER NODES from %s returned %T, want string", addr, v.SmartResult())
+	}
+	if !strings.HasPrefix(strings.TrimSpace(payload), "{") {
+		return nil, fmt.Errorf("server %s rejected CLUSTER NODES: %s", addr, payload)
+	}
+
+	var nodes map[string]*clusters.ClusterNode
+	if err := json.Unmarshal([]byte(payload), &nodes); err != nil {
+		return nil, fmt.Errorf("decode CLUSTER NODES from %s: %w", addr, err)
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("CLUSTER NODES returned no nodes")
+	}
+	for name, node := range nodes {
+		if node == nil {
+			return nil, fmt.Errorf("CLUSTER NODES returned nil node %q", name)
+		}
+		if node.Name == "" || node.ClientPort < 1 || node.ClientPort > 65535 {
+			return nil, fmt.Errorf("CLUSTER NODES returned invalid node %q (name=%q, port=%d)", name, node.Name, node.ClientPort)
+		}
+	}
+	return nodes, nil
 }
 
 func connect(port int) {
@@ -202,15 +244,41 @@ func main() {
 				return
 			}
 
+			time.Sleep(10000)
 		}
 		// --cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
 
 		// TODO: Make this work for locally hosted clusters too
 
-	case "--cluster-rebalance-nodes":
-		result, err := clusters.ClusterRebalanceNodes()
-		if err != nil || result != 1 {
-			fmt.Printf("ERROR: %s\n", err.Error())
+	case "--cluster-rebalance-nodes", "--rebalance-nodes":
+		addr := "127.0.0.1:6379"
+		if len(os.Args) > 3 {
+			fmt.Println("Usage: --rebalance-nodes [host:port]")
+			return
+		}
+		if len(os.Args) == 3 && os.Args[2] != "" {
+			addr = os.Args[2]
+		}
+		host, _, err := net.SplitHostPort(addr)
+		if err == nil && host == "" {
+			err = fmt.Errorf("host is empty")
+		}
+		if err != nil {
+			fmt.Printf("Invalid rebalance node address %q: %v\n", addr, err)
+			return
+		}
+		nodes, err := readClusterNodes(addr)
+		if err != nil {
+			fmt.Printf("ERROR reading cluster nodes: %v\n", err)
+			return
+		}
+		result, err := clusters.ClusterRebalanceNodes(nodes)
+		if err != nil {
+			fmt.Printf("ERROR rebalancing cluster: %v\n", err)
+			return
+		}
+		if result != 1 {
+			fmt.Printf("ERROR rebalancing cluster: unexpected result %d\n", result)
 			return
 		}
 

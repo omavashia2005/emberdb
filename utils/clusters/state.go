@@ -1,6 +1,9 @@
 package clusters
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 type ClusterState struct {
 	Self      *ClusterNode
@@ -93,6 +96,7 @@ func (s *ClusterState) ImportingSlotsFrom(slot int, node *ClusterNode) error {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
 
+	fmt.Printf("[DEBUG] STATE: %+v\n", s)
 	s.Importing[slot] = node
 
 	return nil
