@@ -75,7 +75,7 @@ func clusterMsgBuildHdr(messageType int) *clusterMsg {
 	return hdr
 }
 
-func decodeClusterMsg(buf []byte) (*clusterMsg, error) {
+func deserializeClusterMsg(buf []byte) (*clusterMsg, error) {
 	if len(buf) < CLUSTERMSG_HEADER_SIZE {
 		return nil, fmt.Errorf("cluster message too short: %d bytes", len(buf))
 	}
@@ -141,7 +141,7 @@ func decodeClusterMsg(buf []byte) (*clusterMsg, error) {
 	return msg, nil
 }
 
-func encodeClusterMsg(msg *clusterMsg) []byte {
+func serializeClusterMsg(msg *clusterMsg) []byte {
 	buf := make([]byte, 0, msg.totLen)
 	buf = append(buf, msg.Sig[:]...)
 	buf = binary.BigEndian.AppendUint32(buf, msg.totLen)

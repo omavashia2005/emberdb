@@ -67,7 +67,7 @@ func clusterReadLoop(link *clusterLink) {
 			return
 		}
 
-		msg, err := decodeClusterMsg(buf)
+		msg, err := deserializeClusterMsg(buf)
 
 		clusterProcessMsg(link, msg)
 

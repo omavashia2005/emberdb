@@ -1,7 +1,6 @@
 package clusters
 
 import (
-	"fmt"
 	"sync"
 )
 

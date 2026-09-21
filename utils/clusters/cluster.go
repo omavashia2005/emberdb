@@ -175,7 +175,7 @@ func clusterSendPing(link *clusterLink, messageType int) {
 	hdr.SetTotalLength(totLen)
 	hdr.SetCount(uint16(gossipCount))
 
-	sendBuf := encodeClusterMsg(hdr)
+	sendBuf := serializeClusterMsg(hdr)
 
 	link.Send() <- sendBuf
 }
@@ -244,7 +244,11 @@ func ClusterRebalanceNodes(stateNodes map[string]*ClusterNode) (int, error) {
 
 			if len(moved) != numslots {
 				if result == 0 {
-					return result, fmt.Errorf("source node %s owns %d eligible slots; rebalance requested %d", srcNode.GetName(), len(moved), numslots)
+					return result, fmt.Errorf("source node %s owns %d eligible slots; rebalance requested %d",
+							srcNode.GetName(),
+							len(moved),
+							numslots,
+						)
 				}
 
 				dstNode.AdjustBalance(int32(numslots))
@@ -279,6 +283,7 @@ func ClusterRebalanceNodes(stateNodes map[string]*ClusterNode) (int, error) {
 		}
 
 		dstIdx++
+		srcIdx--
 	}
 
 	fmt.Println("[rebalance] complete")
