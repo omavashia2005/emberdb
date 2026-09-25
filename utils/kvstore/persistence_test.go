@@ -88,31 +88,6 @@ func TestAOFFailureSkipsMutation(t *testing.T) {
 	_ = kv.Close()
 }
 
-func TestClusterPersistenceUsesSlotStorage(t *testing.T) {
-	dir := t.TempDir()
-	kv, err := OpenPersistent(dir, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kv.Set("{account}:name", "ember")
-	kv.RPush("{account}:roles", "reader", "writer")
-	if err := kv.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	kv, err = OpenPersistent(dir, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer kv.Close()
-	if got := kv.Get("{account}:name"); got != "ember" {
-		t.Fatalf("cluster GET = %q", got)
-	}
-	if got := kv.LRange("{account}:roles", 0, -1); !reflect.DeepEqual(got, []string{"reader", "writer"}) {
-		t.Fatalf("cluster LRANGE = %#v", got)
-	}
-}
-
 func assertRecovered(t *testing.T, kv *KVStore) {
 	t.Helper()
 	if got := kv.Get("string"); got != "one\r\ntwo" {

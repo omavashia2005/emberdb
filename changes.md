@@ -8,9 +8,9 @@
 
 ## Tests and benchmarks
 
-- Added Redis-mapped KV and cluster regressions with the exact upstream test, reason, and source link beside each case. (`utils/kvstore/kvstore_test.go:1-148`, `utils/clusters/cluster_test.go:1-101`, `cmd/ember-server/main_test.go:1-219`)
+- Added Redis-mapped KV regressions plus Docker-only cluster integration tests, with the exact upstream test, reason, and source link beside each case. (`utils/kvstore/kvstore_test.go`, `cmd/ember-server/main_test.go`, `integration/cluster_test.go`)
 - Added focused datatype, pub/sub, and persistence checks. (`utils/kvstore/data_types_test.go:1-57`, `utils/pubsub/pubsub_test.go:1-16`, `utils/kvstore/persistence_test.go:1-133`, `cmd/ember-server/data_types_test.go:1-46`)
-- Added standalone and cluster-enabled GET, SET, MGET, and MSET command-path benchmarks plus the requested Redis benchmark inventory and comparison commands. (`cmd/ember-server/main_test.go:95-219`, `redis-benchmarks.md:1-52`)
+- Added `make bench`, which creates matching Docker environments and prints labeled EmberDB-vs-Redis tables for standalone and three-node-cluster GET, SET, MGET, and MSET throughput. Added `make test-cluster` for Docker-only cluster checks. (`Makefile`, `compose.benchmark.yaml`, `scripts/docker-clusters.sh`, `cmd/ember-bench/main.go`, `integration/cluster_test.go`, `redis-benchmarks.md`)
 
 ## Bugs and improvements
 

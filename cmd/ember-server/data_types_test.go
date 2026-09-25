@@ -6,7 +6,7 @@ import (
 )
 
 func TestDataTypeCommands(t *testing.T) {
-	server := startCommandServer(t, false)
+	server := startCommandServer(t)
 
 	if got := fmt.Sprint(server.run(t, command("LPUSH", "list", "c", "b", "a"))); got != "3" {
 		t.Fatalf("LPUSH = %s", got)
@@ -34,8 +34,8 @@ func TestDataTypeCommands(t *testing.T) {
 }
 
 func TestUnsubscribeCommandStopsDelivery(t *testing.T) {
-	subscriber := startCommandServer(t, false)
-	publisher := startCommandServer(t, false)
+	subscriber := startCommandServer(t)
+	publisher := startCommandServer(t)
 	subscriber.run(t, command("SUBSCRIBE", "updates"))
 	if got := subscriber.run(t, command("UNSUBSCRIBE", "updates")); got != "OK" {
 		t.Fatalf("UNSUBSCRIBE = %#v", got)

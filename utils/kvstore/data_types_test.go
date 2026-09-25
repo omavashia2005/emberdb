@@ -32,26 +32,3 @@ func TestReferenceDataTypeCommands(t *testing.T) {
 		t.Fatalf("ZRange = %v", got)
 	}
 }
-
-func TestClusterDataTypesUseTaggedSlotValues(t *testing.T) {
-	kv := NewKVStore(true)
-	kv.LPush("list{group}", "a")
-	kv.HSet("hash{group}", "field", "value")
-	kv.SAdd("set{group}", "member")
-	if _, err := kv.ZAdd("sorted{group}", "1", "member"); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(kv.Lists)+len(kv.Hashes)+len(kv.Sets)+len(kv.SortedSets) != 0 {
-		t.Fatal("clustered values leaked into standalone maps")
-	}
-	slot := kv.SlotKeys[SlotForKey("list{group}")]
-	for key, want := range map[string]DataType{
-		"list{group}": ListType, "hash{group}": HashType,
-		"set{group}": SetType, "sorted{group}": SortedSetType,
-	} {
-		if got := slot[key].Type; got != want {
-			t.Fatalf("%s type = %d, want %d", key, got, want)
-		}
-	}
-}

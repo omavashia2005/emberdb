@@ -1,0 +1,44 @@
+services:
+  ember-standalone:
+    build: .
+    command: ["__standalone", "6379"]
+    ports: ["127.0.0.1::6379"]
+
+  ember-1:
+    build: .
+    command: ["__node", "6379", "ember-1"]
+    ports: ["127.0.0.1::6379"]
+
+  ember-2:
+    build: .
+    command: ["__node", "6379", "ember-2"]
+    ports: ["127.0.0.1::6379"]
+
+  ember-3:
+    build: .
+    command: ["__node", "6379", "ember-3"]
+    ports: ["127.0.0.1::6379"]
+
+  redis-standalone:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["127.0.0.1::6379"]
+
+  redis-1:
+    image: redis:7-alpine
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["127.0.0.1::6379"]
+
+  redis-2:
+    image: redis:7-alpine
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["127.0.0.1::6379"]
+
+  redis-3:
+    image: redis:7-alpine
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["127.0.0.1::6379"]
+
+  benchmark-client:
+    image: redis:7-alpine
+    command: ["sh", "-c", "tail -f /dev/null"]

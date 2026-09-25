@@ -115,31 +115,6 @@ func TestIncrementRejectsWhitespace(t *testing.T) {
 	}
 }
 
-// Redis mapping: "client can handle keys with hash tag".
-// Relevant because SlotForKey is shared by clustered storage and routing.
-// Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/cluster/tests/15-cluster-slots.tcl#L46-L50
-func TestHashTaggedKeysShareSlot(t *testing.T) {
-	if a, b := SlotForKey("foo{tag}"), SlotForKey("bar{tag}"); a != b {
-		t.Fatalf("hash-tag slots differ: %d, %d", a, b)
-	}
-}
-
-// Redis mapping: "It is possible to write and read from the cluster".
-// Relevant because cluster mode stores values in the per-slot representation instead of standalone maps.
-// Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/cluster/tests/00-base.tcl#L62-L64
-func TestClusterStoreWritesAndReadsBySlot(t *testing.T) {
-	kv := NewKVStore(true)
-	kv.Set("foo{tag}", "bar")
-
-	if got := kv.Get("foo{tag}"); got != "bar" {
-		t.Fatalf("Get() = %q, want bar", got)
-	}
-	keys := kv.GetKeysInSlot(uint64(SlotForKey("foo{tag}")), 1)
-	if len(keys) != 1 || keys[0] != "foo{tag}" {
-		t.Fatalf("GetKeysInSlot() = %v", keys)
-	}
-}
-
 // Redis mapping: "DECRBY negation overflow".
 // Relevant because wrapping a signed integer silently corrupts counter values.
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/incr.tcl#L55-L59

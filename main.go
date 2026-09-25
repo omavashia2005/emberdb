@@ -51,6 +51,10 @@ func startCluster() error {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "__standalone" {
+		server.Run(os.Args[2], "", false)
+		return
+	}
 
 	if len(os.Args) == 4 && os.Args[1] == "__node" {
 		port := os.Args[2]
