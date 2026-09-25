@@ -2,7 +2,6 @@ package kvstore
 
 import (
 	"fmt"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,7 +45,6 @@ type KVStore struct {
 	Expirations       map[string]time.Time
 	mu                sync.RWMutex
 	CommandsProcessed int
-	Clients           map[string]net.Conn
 	SlotKeys          [16384]map[string]Value
 	clusterEnabled    bool
 	persistence       *persistence
@@ -60,7 +58,6 @@ func NewKVStore(clusterEnabled ...bool) *KVStore {
 		Sets:        make(map[string]map[string]struct{}),
 		SortedSets:  make(map[string][]SortedSetMember),
 		Expirations: make(map[string]time.Time),
-		Clients:     make(map[string]net.Conn),
 	}
 	if len(clusterEnabled) > 0 {
 		kv.clusterEnabled = clusterEnabled[0]

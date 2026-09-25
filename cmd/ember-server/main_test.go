@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/bytechan/resp3"
@@ -91,4 +92,41 @@ func TestMSetSameKeyLastValueWins(t *testing.T) {
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/string.tcl#L207-L209
 func TestMGetMissingKeyReturnsNull(t *testing.T) {
 	t.Skip(`known incompatibility: MGET encodes the internal "(nil)" sentinel as a string`)
+}
+
+func TestConcurrentConnections(t *testing.T) {
+	kv := kvstore.NewKVStore()
+	var clients, servers sync.WaitGroup
+	errs := make(chan error, 50)
+	for range 50 {
+		clientConn, serverConn := net.Pipe()
+		servers.Add(1)
+		go func() {
+			defer servers.Done()
+			handleConnection(serverConn, kv, false)
+		}()
+		clients.Add(1)
+		go func() {
+			defer clients.Done()
+			defer clientConn.Close()
+			if err := resp3.NewWriter(clientConn).WriteCommand("PING"); err != nil {
+				errs <- err
+				return
+			}
+			value, _, err := resp3.NewReader(clientConn).ReadValue()
+			if err != nil {
+				errs <- err
+				return
+			}
+			if value.SmartResult() != "PONG" {
+				errs <- fmt.Errorf("PING = %#v", value.SmartResult())
+			}
+		}()
+	}
+	clients.Wait()
+	servers.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 }

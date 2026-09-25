@@ -82,8 +82,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 		rconn.CloseWithError(err)
 	}
 
-	kv.Clients[conn.RemoteAddr().String()] = conn
-
 	for {
 		args, err := rconn.Next()
 		if err != nil {
