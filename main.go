@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	server "github.com/omavashia2005/emberdb/cmd/ember-server"
+	"github.com/omavashia2005/emberdb/utils"
 	// "github.com/omavashia2005/emberdb/utils/clusters"
 )
 
@@ -19,18 +20,19 @@ var CLUSTER_PORTS = []string{"6379", "6380", "6381"}
 func startCluster() error {
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("failed to find executable: %s\n", err)
+		return fmt.Errorf("%w: find executable: %v", utils.ErrStartup, err)
 	}
 
 	for _, port := range CLUSTER_PORTS {
-		cmd := exec.Command(exe, "__node", port)
+		cmd := exec.Command(exe, "__node", port, "127.0.0.1")
 
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf(
-				"failed to start node on %s: %v\n",
+				"%w: start node on %s: %v",
+				utils.ErrStartup,
 				port,
 				err,
 			)
@@ -74,7 +76,7 @@ func main() {
 		)
 
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("[ERROR] %v\n", err)
+			utils.PrintError(err)
 		}
 	}
 
@@ -125,24 +127,23 @@ func main() {
 			if len(args) == 2 {
 				if args[0] != "ember" {
 					fmt.Printf("Invalid command: %s\n", args[0])
-					return
+					continue
 				}
 				switch args[1] {
 				case "start":
-					fmt.Println("ember running on port 6739")
+					fmt.Println("ember running on port 6379")
 					go server.Run("6379", "", false)
 					continue
 
 				case "cluster-start":
 					err := startCluster()
 					if err != nil {
-						panic(fmt.Errorf("[ERROR] %e", err))
-
+						utils.PrintError(err)
 					}
 					continue
 				default:
-					fmt.Printf("No such option%s\n", args[1])
-					return
+					fmt.Printf("No such option: %s\n", args[1])
+					continue
 				}
 
 			} else if len(args) == 3 {
@@ -152,19 +153,16 @@ func main() {
 					port := args[2]
 					fmt.Printf("ember running on port %s\n", port)
 
-					port = ":" + port
-
 					go server.Run(port, "", false)
 					continue
 				default:
-					fmt.Printf("No such option%s\n", args[1])
-					return
+					fmt.Printf("No such option: %s\n", args[1])
+					continue
 
 				}
 
 			}
 
-			fmt.Print("ember-cli> ")
 		}
 
 	}

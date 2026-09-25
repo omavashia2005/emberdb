@@ -50,39 +50,39 @@ type cliNode struct {
 func readClusterNodes(addr string) (map[string]*clusters.ClusterNode, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("connect to %s: %w", addr, err)
+		return nil, fmt.Errorf("%w: connect to %s: %v", utils.ErrConnection, addr, err)
 	}
 	defer conn.Close()
 
 	rconn := resp.NewServer(conn)
 	if err := rconn.WriteArrayString([]string{"CLUSTER", "NODES"}); err != nil {
-		return nil, fmt.Errorf("send CLUSTER NODES to %s: %w", addr, err)
+		return nil, fmt.Errorf("%w: send CLUSTER NODES to %s: %v", utils.ErrConnection, addr, err)
 	}
 	v, _, err := resp3.NewReader(conn).ReadValue()
 	if err != nil {
-		return nil, fmt.Errorf("read CLUSTER NODES from %s: %w", addr, err)
+		return nil, fmt.Errorf("%w: read CLUSTER NODES from %s: %v", utils.ErrConnection, addr, err)
 	}
 	payload, ok := v.SmartResult().(string)
 	if !ok {
-		return nil, fmt.Errorf("CLUSTER NODES from %s returned %T, want string", addr, v.SmartResult())
+		return nil, fmt.Errorf("%w: CLUSTER NODES from %s returned %T, want string", utils.ErrCluster, addr, v.SmartResult())
 	}
 	if !strings.HasPrefix(strings.TrimSpace(payload), "{") {
-		return nil, fmt.Errorf("server %s rejected CLUSTER NODES: %s", addr, payload)
+		return nil, fmt.Errorf("%w: server %s rejected CLUSTER NODES: %s", utils.ErrCluster, addr, payload)
 	}
 
 	var nodes map[string]*clusters.ClusterNode
 	if err := json.Unmarshal([]byte(payload), &nodes); err != nil {
-		return nil, fmt.Errorf("decode CLUSTER NODES from %s: %w", addr, err)
+		return nil, fmt.Errorf("%w: decode CLUSTER NODES from %s: %v", utils.ErrCluster, addr, err)
 	}
 	if len(nodes) == 0 {
-		return nil, fmt.Errorf("CLUSTER NODES returned no nodes")
+		return nil, fmt.Errorf("%w: CLUSTER NODES returned no nodes", utils.ErrCluster)
 	}
 	for name, node := range nodes {
 		if node == nil {
-			return nil, fmt.Errorf("CLUSTER NODES returned nil node %q", name)
+			return nil, fmt.Errorf("%w: CLUSTER NODES returned nil node %q", utils.ErrCluster, name)
 		}
 		if node.Name == "" || node.ClientPort < 1 || node.ClientPort > 65535 {
-			return nil, fmt.Errorf("CLUSTER NODES returned invalid node %q (name=%q, port=%d)", name, node.Name, node.ClientPort)
+			return nil, fmt.Errorf("%w: CLUSTER NODES returned invalid node %q (name=%q, port=%d)", utils.ErrCluster, name, node.Name, node.ClientPort)
 		}
 	}
 	return nodes, nil
@@ -91,7 +91,8 @@ func readClusterNodes(addr string) (map[string]*clusters.ClusterNode, error) {
 func connect(port int) {
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		panic(err)
+		utils.PrintError(fmt.Errorf("%w: %v", utils.ErrConnection, err))
+		return
 	}
 	defer conn.Close()
 
@@ -124,7 +125,7 @@ func connect(port int) {
 		for {
 			v, _, err := reader.ReadValue()
 			if err != nil {
-				fmt.Println("read error:", err)
+				utils.PrintError(fmt.Errorf("%w: read response: %v", utils.ErrConnection, err))
 				return
 			}
 
@@ -158,12 +159,12 @@ func connect(port int) {
 
 			args, err := shlex.Split(line)
 			if err != nil {
-				fmt.Println("parse error:", err)
+				utils.PrintError(fmt.Errorf("%w: %v", utils.ErrInvalidInput, err))
 				continue
 			}
 
 			if err := rconn.WriteArrayString(args); err != nil {
-				fmt.Println("write error:", err)
+				utils.PrintError(fmt.Errorf("%w: write command: %v", utils.ErrConnection, err))
 				return
 			}
 		case message := <-output:
@@ -177,78 +178,84 @@ func main() {
 
 	if len(os.Args) == 1 {
 		connect(6379)
+		return
 	}
 
 	switch os.Args[1] {
 
 	case "--cluster-add-node":
+		docker := len(os.Args) > 2 && os.Args[2] == "--docker"
+		offset := 2
+		if docker {
+			offset++
+		}
+		if len(os.Args) != offset+2 {
+			fmt.Println("Usage: --cluster-add-node [--docker] <new-host>:<port> <existing-host>:<port>")
+			return
+		}
 
-		/*
-			--cluster-add-node --docker <new_node_name>:<new_node_port> <existing_node_name>:<existing_node_port>
-		*/
-		if os.Args[2] == "--docker" {
-			if len(os.Args) != 5 {
-				fmt.Println("Invalid arguments for this command")
-				return
-			}
+		newNodeHost, newNodePort, err := net.SplitHostPort(os.Args[offset])
+		if err != nil {
+			utils.PrintError(fmt.Errorf("%w: new node: %v", utils.ErrInvalidInput, err))
+			return
+		}
+		existingNodeHost, existingNodePort, err := net.SplitHostPort(os.Args[offset+1])
+		if err != nil {
+			utils.PrintError(fmt.Errorf("%w: existing node: %v", utils.ErrInvalidInput, err))
+			return
+		}
 
-			newNodeArg := string(os.Args[3])
-			existingNodeArg := string(os.Args[4])
-
-			newNodeName, newNodePort, ok := strings.Cut(newNodeArg, ":")
-			if !ok {
-				fmt.Println("Invalid new node. Expected <name>:<port>")
-				return
-			}
-
-			existingNodeName, existingNodePort, ok := strings.Cut(existingNodeArg, ":")
-			if !ok {
-				fmt.Println("Invalid existing node. Expected <name>:<port>")
-				return
-			}
-
+		removeContainer := false
+		if docker {
+			containerName := newNodeHost
 			cmd := exec.Command(
 				"docker", "compose", "run",
 				"-d",
-				"--name", newNodeName,
+				"--name", newNodeHost,
 				"-p", newNodePort+":6379",
 				"node-1",
-				"__node", "6379", newNodeName,
+				"__node", "6379", newNodeHost,
 			)
 
 			output, err := cmd.CombinedOutput()
 			if err != nil {
-				fmt.Printf("Error: %v\n%s\n", err, output)
+				utils.PrintError(fmt.Errorf("%w: start Docker node: %v: %s", utils.ErrStartup, err, output))
 				return
 			}
+			removeContainer = true
+			defer func() {
+				if removeContainer {
+					_ = exec.Command("docker", "rm", "-f", containerName).Run()
+				}
+			}()
+			newNodeHost = "127.0.0.1"
+		}
 
-			existingPort, err := strconv.Atoi(existingNodePort)
-			if err != nil {
-				fmt.Printf("[ERROR  - ADDNODE] %e", err)
-				return
-			}
-			newNodeConn, err := net.Dial("tcp", "127.0.0.1:"+newNodePort)
-			if err != nil {
-				fmt.Printf("[ERROR  - ADDNODE] %e", err)
-				return
-			}
-			defer newNodeConn.Close()
+		existingPort, err := strconv.Atoi(existingNodePort)
+		if err != nil {
+			utils.PrintError(fmt.Errorf("%w: existing node port: %v", utils.ErrInvalidInput, err))
+			return
+		}
+		newNodeConn, err := net.Dial("tcp", net.JoinHostPort(newNodeHost, newNodePort))
+		if err != nil {
+			utils.PrintError(fmt.Errorf("%w: connect to new node: %v", utils.ErrConnection, err))
+			return
+		}
+		defer newNodeConn.Close()
 
-			err = clusters.ClusterMeet(
-				newNodeConn,
-				existingPort,
-				existingNodeName,
-			)
-			if err != nil {
-				fmt.Printf("[ERROR] %e", err)
-				return
-			}
-
+		err = clusters.ClusterMeet(
+			newNodeConn,
+			existingPort,
+			existingNodeHost,
+		)
+		if err != nil {
+			utils.PrintError(fmt.Errorf("%w: add node: %v", utils.ErrCluster, err))
+			return
+		}
+		if docker {
 			time.Sleep(10 * time.Second)
 		}
-		// --cluster-add-node <new_node_ip>:<new_node_port> <existing_node_ip>:<existing_node_port>
-
-		// TODO: Make this work for locally hosted clusters too
+		removeContainer = false
 
 	case "--cluster-rebalance-nodes", "--rebalance-nodes":
 		addr := "127.0.0.1:6379"
@@ -264,21 +271,21 @@ func main() {
 			err = fmt.Errorf("host is empty")
 		}
 		if err != nil {
-			fmt.Printf("Invalid rebalance node address %q: %v\n", addr, err)
+			utils.PrintError(fmt.Errorf("%w: rebalance node address %q: %v", utils.ErrInvalidInput, addr, err))
 			return
 		}
 		nodes, err := readClusterNodes(addr)
 		if err != nil {
-			fmt.Printf("ERROR reading cluster nodes: %v\n", err)
+			utils.PrintError(err)
 			return
 		}
 		result, err := clusters.ClusterRebalanceNodes(nodes)
 		if err != nil {
-			fmt.Printf("ERROR rebalancing cluster: %v\n", err)
+			utils.PrintError(fmt.Errorf("%w: rebalance: %v", utils.ErrCluster, err))
 			return
 		}
 		if result != 1 {
-			fmt.Printf("ERROR rebalancing cluster: unexpected result %d\n", result)
+			utils.PrintError(fmt.Errorf("%w: rebalance returned %d", utils.ErrCluster, result))
 			return
 		}
 
@@ -309,7 +316,8 @@ func main() {
 		}
 
 		if len(addrs) < 3 {
-			panic(fmt.Errorf("At least 3 nodes needed to create cluster"))
+			utils.PrintError(fmt.Errorf("%w: at least 3 nodes needed to create cluster", utils.ErrInvalidInput))
+			return
 		}
 
 		// try connecting to each port (check if they exist)
@@ -324,14 +332,14 @@ func main() {
 			host, port, err := net.SplitHostPort(addr)
 
 			if err != nil {
-				fmt.Printf("Error resolving port or host, %s\n", err)
+				utils.PrintError(fmt.Errorf("%w: node address %q: %v", utils.ErrInvalidInput, addr, err))
 				return
 			}
 
 			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 
 			if err != nil {
-				fmt.Printf("Error connecting to %s\n", addr)
+				utils.PrintError(fmt.Errorf("%w: connect to %s: %v", utils.ErrConnection, addr, err))
 				return
 			}
 
@@ -354,25 +362,29 @@ func main() {
 			})
 
 			if err != nil {
-				panic(err)
+				utils.PrintError(fmt.Errorf("%w: request CLUSTER MYADDR from %s: %v", utils.ErrConnection, addr, err))
+				return
 			}
 
 			v, _, err := reader.ReadValue()
 			if err != nil {
-				panic(err)
+				utils.PrintError(fmt.Errorf("%w: read CLUSTER MYADDR from %s: %v", utils.ErrConnection, addr, err))
+				return
 			}
 
 			result := v.SmartResult()
 			values, ok := result.([]interface{})
 			if !ok || len(values) != 2 {
-				panic(fmt.Errorf("unexpected CLUSTER MYADDR response: %#v", result))
+				utils.PrintError(fmt.Errorf("%w: unexpected CLUSTER MYADDR response: %#v", utils.ErrCluster, result))
+				return
 			}
 
 			node.clusterHost = fmt.Sprint(values[0])
 
 			node.clusterPort, err = strconv.Atoi(fmt.Sprint(values[1]))
 			if err != nil {
-				panic(err)
+				utils.PrintError(fmt.Errorf("%w: invalid CLUSTER MYADDR port: %v", utils.ErrCluster, err))
+				return
 			}
 
 			cliNodeArray = append(cliNodeArray, &node)
@@ -460,7 +472,8 @@ func main() {
 				target.clusterHost,
 			)
 			if err != nil {
-				panic(fmt.Errorf("[ERROR] %e", err))
+				utils.PrintError(fmt.Errorf("%w: meet %s: %v", utils.ErrCluster, target.ctx.TCP.sourceAddr, err))
+				return
 			}
 		}
 

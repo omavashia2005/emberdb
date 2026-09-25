@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+
+	"github.com/omavashia2005/emberdb/utils"
 )
 
 const (
@@ -170,7 +172,8 @@ func serializeClusterMsg(msg *clusterMsg) []byte {
 	}
 
 	if len(buf) != int(msg.totLen) {
-		panic(fmt.Sprintf("cluster message size mismatch: encoded=%d expected=%d", len(buf), msg.totLen))
+		utils.PrintError(fmt.Errorf("%w: message size mismatch: encoded=%d expected=%d", utils.ErrCluster, len(buf), msg.totLen))
+		return nil
 	}
 	return buf
 }
