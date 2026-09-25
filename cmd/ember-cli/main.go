@@ -252,9 +252,7 @@ func main() {
 			utils.PrintError(fmt.Errorf("%w: add node: %v", utils.ErrCluster, err))
 			return
 		}
-		if docker {
-			time.Sleep(10 * time.Second)
-		}
+		time.Sleep(10 * time.Second)
 		removeContainer = false
 
 	case "--cluster-rebalance-nodes", "--rebalance-nodes":

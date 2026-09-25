@@ -15,6 +15,6 @@
 ## Bugs and improvements
 
 - Fixed the duplicate/wrong server prompt, local node argument count, displayed default port, and custom-port startup. (`main.go:20-169`)
-- Added local `--cluster-add-node` support and removes a Docker node when add-node setup fails. (`cmd/ember-cli/main.go:186-258`)
+- Added local `--cluster-add-node` support, cleanup when Docker setup fails, and a built-in 10-second convergence wait before rebalance. (`cmd/ember-cli/main.go:186-256`)
 - Centralized non-RESP error categories/output and replaced panics with returned, printed, or RESP-encoded errors. (`utils/errors.go:1-17`, `main.go`, `cmd/ember-cli/main.go`, `cmd/ember-server/main.go`, `utils/clusters/message.go:144-179`)
 - Cluster storage now uses `SlotKeys [16384]map[string]Value`; non-cluster storage retains classical per-type maps. (`utils/kvstore/kvstore.go:32-90`)
