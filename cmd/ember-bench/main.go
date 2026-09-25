@@ -107,10 +107,10 @@ func compare(mode string, emberAddrs, redisAddrs []string, requests, clients int
 }
 
 func measure(addrs []string, work workload, requests, clients int) (float64, error) {
-	tags := tagsForNodes(len(addrs))
+	tags := tagsForClients(len(addrs), clients)
 	if work.setup != nil {
-		for i, addr := range addrs {
-			if err := runOnce(addr, work.setup(tags[i])); err != nil {
+		for i, tag := range tags {
+			if err := runOnce(addrs[i%len(addrs)], work.setup(tag)); err != nil {
 				return 0, err
 			}
 		}
@@ -123,7 +123,7 @@ func measure(addrs []string, work workload, requests, clients int) (float64, err
 			closeClients(connections)
 			return 0, err
 		}
-		connections[i] = benchClient{conn: conn, writer: resp3.NewWriter(conn), reader: resp3.NewReader(conn), tag: tags[i%len(tags)]}
+		connections[i] = benchClient{conn: conn, writer: resp3.NewWriter(conn), reader: resp3.NewReader(conn), tag: tags[i]}
 	}
 	defer closeClients(connections)
 
@@ -186,26 +186,23 @@ func runOnce(addr string, args []string) error {
 	return err
 }
 
-func tagsForNodes(count int) []string {
-	if count == 1 {
-		return []string{"standalone"}
-	}
-	tags := make([]string, count)
-	start := 0
-	for node := range count {
-		end := int(math.Round(float64(node+1)*16384/float64(count) - 1))
-		if node == count-1 {
+func tagsForClients(nodes, clients int) []string {
+	tags := make([]string, clients)
+	for client := range clients {
+		node := client % nodes
+		start := int(math.Round(float64(node) * 16384 / float64(nodes)))
+		end := int(math.Round(float64(node+1)*16384/float64(nodes) - 1))
+		if node == nodes-1 {
 			end = 16383
 		}
 		for candidate := 0; ; candidate++ {
-			tag := strconv.Itoa(candidate)
+			tag := strconv.Itoa(client) + ":" + strconv.Itoa(candidate)
 			slot := int(kvstore.SlotForKey("{" + tag + "}"))
 			if slot >= start && slot <= end {
-				tags[node] = tag
+				tags[client] = tag
 				break
 			}
 		}
-		start = end + 1
 	}
 	return tags
 }
