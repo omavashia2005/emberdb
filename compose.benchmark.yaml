@@ -42,3 +42,13 @@ services:
   benchmark-client:
     image: redis:7-alpine
     command: ["sh", "-c", "tail -f /dev/null"]
+
+  bench-runner:
+    image: golang:1.25-alpine
+    working_dir: /src
+    volumes:
+      - .:/src
+      - gomod:/go/pkg/mod
+
+volumes:
+  gomod:

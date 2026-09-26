@@ -1,0 +1,18 @@
+{
+  "name": "emberdb-benchmark-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "test": "node --experimental-strip-types src/comparison.test.ts && node ../scripts/bench-dashboard.test.mjs"
+  },
+  "dependencies": {
+    "chart.js": "4.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.63.0",
+    "typescript": "7.0.2"
+  }
+}
