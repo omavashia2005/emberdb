@@ -50,14 +50,32 @@ func toMoveorNotToMove(key string, rconn *resp.Server, _ *kvstore.KVStore) strin
 	}
 
 	if ownerNode != serverState.Self {
-		rconn.WriteStatusString(
-			fmt.Sprintf("MOVED %d %s", slot, ownerNode.GetName()),
-		)
+		owner := ownerNode.Snapshot()
+		rconn.WriteRaw([]byte(fmt.Sprintf("-MOVED %d %s\r\n", slot, net.JoinHostPort(owner.Host, strconv.Itoa(owner.ClientPort)))))
 
 		return "MOVED"
 	}
 
 	return "OK"
+}
+
+func clusterSlots() []any {
+	ranges := make([]any, 0)
+	for start := 0; start < clusters.CLUSTER_SLOTS; {
+		owner := serverState.GetSlotOwner(start)
+		if owner == nil {
+			start++
+			continue
+		}
+		end := start
+		for end+1 < clusters.CLUSTER_SLOTS && serverState.GetSlotOwner(end+1) == owner {
+			end++
+		}
+		node := owner.Snapshot()
+		ranges = append(ranges, []any{start, end, []any{node.Host, node.ClientPort, node.Name}})
+		start = end + 1
+	}
+	return ranges
 }
 
 func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
@@ -817,6 +835,14 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			switch string(args[0]) {
+			case "SLOTS":
+				if len(args) != 1 {
+					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER SLOTS' command"))
+					continue
+				}
+				if err := rconn.WriteArray(clusterSlots()); err != nil {
+					return
+				}
 
 			case "NODES":
 				if serverState == nil {
