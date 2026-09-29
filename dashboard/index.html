@@ -181,6 +181,7 @@
       <div class="tabs view-tabs" role="tablist" aria-label="Results view">
         <button class="tab" id="table-tab" type="button" role="tab" aria-selected="true" aria-controls="table-view" data-view="table">Table</button>
         <button class="tab" id="charts-tab" type="button" role="tab" aria-selected="false" aria-controls="charts-view" tabindex="-1" data-view="charts">Charts</button>
+        <button class="tab" id="profiling-tab" type="button" role="tab" aria-selected="false" aria-controls="profiling-view" tabindex="-1" data-view="profiling">Profiling<span class="count" id="trace-count">—</span></button>
       </div>
       <section class="panel" id="table-view" role="tabpanel" aria-labelledby="table-tab" tabindex="0">
       <div class="panel-heading"><div><h2>Benchmark results</h2><p>Median throughput and latency for each workload.</p></div><span class="panel-note">Throughput: ops/sec · Latency: ms</span></div>
@@ -197,6 +198,14 @@
         </table>
       </div>
       <div class="pagination"><span id="result-total" role="status">Waiting for results</span><div class="pagination-controls"><span>20 / page</span><button id="previous" type="button" disabled>Previous</button><span id="page-label">1 / 1</span><button id="next" type="button" disabled>Next</button></div></div>
+      </section>
+      <section class="panel" id="profiling-view" role="tabpanel" aria-labelledby="profiling-tab" tabindex="0" hidden>
+        <div class="panel-heading"><div><h2>Trace profiles</h2><p>Open a benchmark case in the Go trace viewer.</p></div></div>
+        <div class="filters"><label class="search">Search profiles<input id="trace-search" type="search" placeholder="Search topology, command, variant, clients, or node…"></label></div>
+        <div class="table-scroll" role="region" aria-label="Trace profiles" tabindex="0">
+          <table><thead><tr><th scope="col">Topology</th><th scope="col">Command</th><th scope="col">Variant</th><th scope="col">Clients</th><th scope="col">Node</th><th scope="col">Trace</th></tr></thead><tbody id="trace-rows"></tbody></table>
+        </div>
+        <div class="pagination"><span id="trace-status" role="status">Loading profiles…</span></div>
       </section>
       <section id="charts-view" role="tabpanel" aria-labelledby="charts-tab" tabindex="0" hidden>
         <div class="panel case-panel">

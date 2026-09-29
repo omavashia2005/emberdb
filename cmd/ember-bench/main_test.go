@@ -1,6 +1,10 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -91,5 +95,35 @@ func TestGetGenHitAndMiss(t *testing.T) {
 	_, args = gen(0)
 	if idx := args[1]; idx != "bench:get:50000" {
 		t.Fatalf("miss key = %q", idx)
+	}
+}
+
+func TestDownloadTrace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/debug/pprof/trace" || r.URL.Query().Get("seconds") != "5" {
+			t.Errorf("unexpected trace request: %s", r.URL)
+		}
+		_, _ = w.Write([]byte("trace data"))
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "node1.trace")
+	if err := downloadTrace(server.URL+"/debug/pprof/trace?seconds=5", path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "trace data" {
+		t.Fatalf("trace = %q, error = %v", data, err)
+	}
+
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer failed.Close()
+	badPath := filepath.Join(filepath.Dir(path), "bad.trace")
+	if err := downloadTrace(failed.URL, badPath); err == nil {
+		t.Fatal("expected trace download error")
+	}
+	if _, err := os.Stat(badPath); !os.IsNotExist(err) {
+		t.Fatalf("failed trace left output file: %v", err)
 	}
 }

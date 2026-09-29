@@ -6,6 +6,61 @@ let mode: Mode = 'standalone';
 let page = 0;
 const pageSize = 20;
 const number = (value: number) => Number.isFinite(value) ? value.toLocaleString() : '—';
+type Trace = { mode: string; command: string; variant: string; concurrency: number; node: string; file: string };
+let traces: Trace[] = [];
+let traceError = '';
+
+function renderTraces() {
+  const search = $<HTMLInputElement>('trace-search').value.trim().toLowerCase();
+  const source = traces.filter(trace => trace.mode === mode);
+  const rows = source.filter(trace => Object.values(trace).join(' ').toLowerCase().includes(search));
+  $('trace-rows').replaceChildren();
+  for (const trace of rows) {
+    const tr = document.createElement('tr');
+    for (const value of [trace.mode, trace.command, trace.variant, `${trace.concurrency}`, trace.node]) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    const td = document.createElement('td');
+    const link = document.createElement('a');
+    link.href = `/trace?file=${encodeURIComponent(trace.file)}`;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = 'Open trace';
+    link.setAttribute('aria-label', `Open trace: ${trace.mode} ${trace.command} ${trace.variant}, ${trace.concurrency} clients, ${trace.node}`);
+    td.appendChild(link);
+    tr.appendChild(td);
+    $('trace-rows').appendChild(tr);
+  }
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 6;
+    td.className = 'empty';
+    td.textContent = search && source.length ? 'No matching profiles.' : traceError || 'No profiles yet for this topology. Run the profiling benchmark to capture traces.';
+    tr.appendChild(td);
+    $('trace-rows').appendChild(tr);
+  }
+  $('trace-count').textContent = number(source.length);
+  $('trace-status').textContent = `${number(rows.length)} of ${number(source.length)} profiles`;
+}
+
+async function loadTraces() {
+  try {
+    const response = await fetch('traces/index.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data: unknown = await response.json();
+    if (!Array.isArray(data) || !data.every((trace: unknown) => trace && typeof trace === 'object' &&
+      ['mode', 'command', 'variant', 'node', 'file'].every(key => typeof (trace as Record<string, unknown>)[key] === 'string') &&
+      typeof (trace as Trace).concurrency === 'number')) throw new Error('invalid trace index');
+    traces = data as Trace[];
+    traceError = '';
+  } catch (error) {
+    traceError = `Profiles unavailable (${error instanceof Error ? error.message : String(error)}). Run the profiling benchmark to generate traces/index.json.`;
+  }
+  renderTraces();
+}
 
 function render() {
   const source = report?.[mode] || [];
@@ -74,6 +129,7 @@ function selectMode(nextMode: Mode) {
   });
   $('results').setAttribute('aria-labelledby', `${mode}-tab`);
   render();
+  renderTraces();
   updateCharts(report?.[mode] || []);
 }
 
@@ -130,7 +186,7 @@ $<HTMLInputElement>('search').addEventListener('input', () => { page = 0; render
 $<HTMLButtonElement>('clear').addEventListener('click', () => { ['search', 'product', 'concurrency'].forEach(id => $<HTMLInputElement | HTMLSelectElement>(id).value = ''); page = 0; render(); });
 $<HTMLButtonElement>('previous').addEventListener('click', () => { page--; render(); });
 $<HTMLButtonElement>('next').addEventListener('click', () => { page++; render(); });
-$<HTMLButtonElement>('reload').addEventListener('click', load);
+$<HTMLButtonElement>('reload').addEventListener('click', () => { void load(); void loadTraces(); });
 const viewTabs = [...document.querySelectorAll<HTMLButtonElement>('[data-view]')];
 function selectView(tab: HTMLButtonElement) {
   viewTabs.forEach(button => {
@@ -146,9 +202,11 @@ viewTabs.forEach((tab, index) => {
   tab.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const next = event.key === 'Home' ? viewTabs[0] : event.key === 'End' ? viewTabs.at(-1)! : viewTabs[1 - index];
+    const next = event.key === 'Home' ? viewTabs[0] : event.key === 'End' ? viewTabs.at(-1)! : viewTabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + viewTabs.length) % viewTabs.length];
     next.focus();
     selectView(next);
   });
 });
 load();
+loadTraces();
+$<HTMLInputElement>('trace-search').addEventListener('input', renderTraces);

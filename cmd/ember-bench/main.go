@@ -5,10 +5,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,6 +52,7 @@ func main() {
 	requests := flag.Int("requests", requestsDefault, "measured requests per repeat")
 	warmup := flag.Int("warmup", warmupDefault, "warmup requests before each measured set")
 	out := flag.String("out", "benchmark-results/results.json", "raw results JSON path")
+	traceDir := flag.String("trace-dir", "", "capture one 5-second pprof trace per EmberDB case and node in this directory")
 	flag.Parse()
 
 	if *requests < 1 || *warmup < 0 {
@@ -64,23 +69,37 @@ func main() {
 		WarmupRequests: *warmup,
 		Repeats:        repeats,
 	}}
+	var traces []traceEntry
+	var profileBatches []profileBatch
 
 	if *mode == "all" || *mode == "standalone" {
 		fmt.Println("=== STANDALONE ===")
-		report.Standalone = append(report.Standalone, runProduct("EmberDB", "standalone", []string{*emberStandalone}, *requests, *warmup)...)
-		report.Standalone = append(report.Standalone, runProduct("Redis", "standalone", []string{*redisStandalone}, *requests, *warmup)...)
+		report.Standalone = append(report.Standalone, runProduct("EmberDB", "standalone", []string{*emberStandalone}, *requests, *warmup, *traceDir, &traces, &profileBatches)...)
+		report.Standalone = append(report.Standalone, runProduct("Redis", "standalone", []string{*redisStandalone}, *requests, *warmup, "", nil, nil)...)
 		printTable(report.Standalone)
 	}
 	if *mode == "all" || *mode == "cluster" {
 		fmt.Println("=== 3-NODE CLUSTER ===")
-		report.Cluster = append(report.Cluster, runProduct("EmberDB", "cluster", split(*emberCluster), *requests, *warmup)...)
-		report.Cluster = append(report.Cluster, runProduct("Redis", "cluster", split(*redisCluster), *requests, *warmup)...)
+		report.Cluster = append(report.Cluster, runProduct("EmberDB", "cluster", split(*emberCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
+		report.Cluster = append(report.Cluster, runProduct("Redis", "cluster", split(*redisCluster), *requests, *warmup, "", nil, nil)...)
 		printTable(report.Cluster)
 	}
 
 	if err := writeReport(*out, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	for _, batch := range profileBatches {
+		if err := batch.run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	if *traceDir != "" {
+		if err := writeTraceIndex(*traceDir, traces); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	fmt.Println("\nRaw results:", *out)
 }
@@ -497,6 +516,46 @@ type report struct {
 	Cluster     []testResult `json:"cluster"`
 }
 
+type traceEntry struct {
+	Mode        string `json:"mode"`
+	Command     string `json:"command"`
+	Variant     string `json:"variant"`
+	Concurrency int    `json:"concurrency"`
+	Node        string `json:"node"`
+	File        string `json:"file"`
+}
+
+type traceRecorder struct {
+	dir     string
+	mode    string
+	addrs   []string
+	entries *[]traceEntry
+}
+
+type traceCase struct {
+	command     string
+	variant     string
+	concurrency int
+	gen         reqGen
+}
+
+type profileBatch struct {
+	recorder traceRecorder
+	requests int
+	cases    []traceCase
+}
+
+func (b profileBatch) run() error {
+	workers := newWorkers(maxConcurrency)
+	defer closeWorkers(workers)
+	for _, c := range b.cases {
+		if err := b.recorder.capture(c.command, c.variant, c.concurrency, b.requests, workers, c.gen); err != nil {
+			return fmt.Errorf("EmberDB %s %s profile %s c=%d: %w", b.recorder.mode, c.command, c.variant, c.concurrency, err)
+		}
+	}
+	return nil
+}
+
 var getVariants = []struct {
 	name  string
 	ratio float64
@@ -514,7 +573,7 @@ var writeVariants = []struct {
 	{"new", false},
 }
 
-func runProduct(product, mode string, addrs []string, requests, warmup int) []testResult {
+func runProduct(product, mode string, addrs []string, requests, warmup int, traceDir string, traces *[]traceEntry, batches *[]profileBatch) []testResult {
 	var r *router
 	var err error
 	if mode == "standalone" {
@@ -545,36 +604,158 @@ func runProduct(product, mode string, addrs []string, requests, warmup int) []te
 
 	var results []testResult
 	var setNewSeq, msetNewSeq atomic.Int64
+	var cases []traceCase
+	var caseList *[]traceCase
+	if traceDir != "" {
+		caseList = &cases
+	}
 
 	for _, v := range getVariants {
 		for _, c := range concurrencies {
-			results = append(results, runOne(product, "GET", v.name, c, workers, requests, warmup, getGen(r, "get", v.ratio)))
+			results = append(results, runOne(product, "GET", v.name, c, workers, requests, warmup, getGen(r, "get", v.ratio), caseList))
 		}
 	}
 	for _, v := range writeVariants {
 		for _, c := range concurrencies {
-			results = append(results, runOne(product, "SET", v.name, c, workers, requests, warmup, setGen(r, "set", v.existing, &setNewSeq)))
+			results = append(results, runOne(product, "SET", v.name, c, workers, requests, warmup, setGen(r, "set", v.existing, &setNewSeq), caseList))
 		}
 	}
 	for _, v := range getVariants {
 		for _, c := range concurrencies {
-			results = append(results, runOne(product, "MGET", v.name, c, workers, requests, warmup, mgetGen(r, "mget", v.ratio)))
+			results = append(results, runOne(product, "MGET", v.name, c, workers, requests, warmup, mgetGen(r, "mget", v.ratio), caseList))
 		}
 	}
 	for _, v := range writeVariants {
 		for _, c := range concurrencies {
-			results = append(results, runOne(product, "MSET", v.name, c, workers, requests, warmup, msetGen(r, "mset", v.existing, &msetNewSeq)))
+			results = append(results, runOne(product, "MSET", v.name, c, workers, requests, warmup, msetGen(r, "mset", v.existing, &msetNewSeq), caseList))
 		}
+	}
+	if caseList != nil {
+		*batches = append(*batches, profileBatch{traceRecorder{traceDir, mode, addrs, traces}, requests, cases})
 	}
 	return results
 }
 
-func runOne(product, command, variant string, concurrency int, workers []*worker, requests, warmup int, gen reqGen) testResult {
+func runOne(product, command, variant string, concurrency int, workers []*worker, requests, warmup int, gen reqGen, cases *[]traceCase) testResult {
 	median, runs, err := runTestCase(workers, concurrency, requests, warmup, gen)
 	if err != nil {
 		fatal(product, command, fmt.Sprintf("%s c=%d", variant, concurrency), err)
 	}
+	if cases != nil {
+		*cases = append(*cases, traceCase{command, variant, concurrency, gen})
+	}
 	return testResult{Product: product, Command: command, Variant: variant, Concurrency: concurrency, runMetric: median, Runs: runs}
+}
+
+func (r *traceRecorder) capture(command, variant string, concurrency, requests int, workers []*worker, gen reqGen) error {
+	variantID := map[string]string{
+		"100% hit": "hit", "50% hit / 50% miss": "mixed", "100% miss": "miss",
+		"existing": "existing", "new": "new",
+	}[variant]
+	if variantID == "" {
+		return fmt.Errorf("unknown trace variant %q", variant)
+	}
+	fmt.Printf("Profiling %s %s %s c=%d\n", r.mode, command, variant, concurrency)
+	dir := filepath.Join(r.dir, r.mode)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	type pendingTrace struct {
+		entry traceEntry
+		url   string
+		path  string
+	}
+	pending := make([]pendingTrace, len(r.addrs))
+	for i, addr := range r.addrs {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return err
+		}
+		node := "standalone"
+		if r.mode == "cluster" {
+			node = fmt.Sprintf("node%d", i+1)
+		}
+		name := fmt.Sprintf("%s_%s_c%d_%s.trace", command, variantID, concurrency, node)
+		path := filepath.Join(dir, name)
+		rel, err := filepath.Rel(filepath.Dir(filepath.Clean(r.dir)), path)
+		if err != nil {
+			return err
+		}
+		pending[i] = pendingTrace{
+			entry: traceEntry{r.mode, command, variant, concurrency, node, filepath.ToSlash(rel)},
+			url:   (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, "6060"), Path: "/debug/pprof/trace", RawQuery: "seconds=5"}).String(),
+			path:  path,
+		}
+	}
+
+	done := make(chan error, len(pending))
+	for _, p := range pending {
+		go func() { done <- downloadTrace(p.url, p.path) }()
+	}
+	var firstErr error
+	for finished := 0; finished < len(pending); {
+		select {
+		case err := <-done:
+			finished++
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		default:
+			if firstErr == nil {
+				_, _, firstErr = runPhase(requests, workers[:concurrency], gen)
+			} else {
+				<-done
+				finished++
+			}
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	for _, p := range pending {
+		*r.entries = append(*r.entries, p.entry)
+	}
+	return nil
+}
+
+func downloadTrace(traceURL, path string) error {
+	client := http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(traceURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: %s", traceURL, resp.Status)
+	}
+	return writeAtomic(path, resp.Body)
+}
+
+func writeAtomic(path string, data io.Reader) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := io.Copy(f, data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+func writeTraceIndex(dir string, entries []traceEntry) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(append([]traceEntry{}, entries...), "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(filepath.Join(dir, "index.json"), bytes.NewReader(data))
 }
 
 func fatal(product, command, context string, err error) {

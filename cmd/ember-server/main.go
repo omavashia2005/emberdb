@@ -2,9 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -953,6 +956,23 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 		return
 	}
 	defer listener.Close()
+
+	pprofAddr := os.Getenv("EMBERDB_PPROF_ADDR")
+	if pprofAddr == "" {
+		pprofAddr = "127.0.0.1:6060"
+	}
+	pprofListener, err := net.Listen("tcp", pprofAddr)
+	if err != nil {
+		log.Printf("pprof listen on %s: %v", pprofAddr, err)
+	} else {
+		defer pprofListener.Close()
+		log.Printf("pprof listening on %s", pprofListener.Addr())
+		go func() {
+			if err := http.Serve(pprofListener, nil); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Printf("pprof server: %v", err)
+			}
+		}()
+	}
 
 	dataDir := os.Getenv("EMBERDB_DATA_DIR")
 	if dataDir == "" {

@@ -16,10 +16,17 @@ const fixture = {
 let report = structuredClone(fixture);
 let status = 200;
 const html = await readFile(new URL('../scripts/bench-dashboard.html', import.meta.url));
+const traces = [
+  { mode: 'cluster', command: 'GET', variant: '100% hit', concurrency: 50, node: 'node2', file: 'cluster/GET 100% hit 50/node2.trace' },
+  { mode: 'standalone', command: 'MSET', variant: 'new', concurrency: 1, node: 'standalone', file: 'standalone/mset.trace' },
+];
 const server = createServer((request, response) => {
   if (request.url === '/results.json') {
     response.writeHead(status, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(report));
+  } else if (request.url === '/traces/index.json') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(traces));
   } else {
     response.writeHead(200, { 'Content-Type': 'text/html' });
     response.end(html);
@@ -38,6 +45,20 @@ try {
   const text = selector => page.locator(selector).textContent();
   await page.goto(url);
   await ready();
+  await page.click('#profiling-tab');
+  assert.equal(await page.locator('#trace-rows tr').count(), 1);
+  assert.match(await text('#trace-rows'), /standalone.*MSET/i);
+  await page.click('#cluster-tab');
+  assert.equal(await page.locator('#trace-rows tr').count(), 1);
+  await page.fill('#trace-search', 'cluster get 100% hit 50 node2');
+  assert.equal(await page.locator('#trace-rows tr').count(), 1);
+  assert.equal(await page.locator('#trace-rows a').getAttribute('href'), '/trace?file=cluster%2FGET%20100%25%20hit%2050%2Fnode2.trace');
+  assert.equal(await page.locator('#trace-rows a').getAttribute('target'), '_blank');
+  await page.fill('#trace-search', 'missing');
+  assert.match(await text('#trace-rows'), /No matching profiles/);
+  await page.fill('#trace-search', '');
+  await page.click('#table-tab');
+  await page.click('#standalone-tab');
   assert.equal(await text('#result-count'), '49');
   assert.equal(await page.locator('#rows tr').count(), 20);
   await page.click('#next');
