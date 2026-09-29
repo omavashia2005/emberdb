@@ -61,6 +61,7 @@
   .metric dd { margin: 9px 0 5px; color: var(--text); font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .metric p { font-size: 12px; color: var(--muted); }
   .tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  .view-tabs { flex-wrap: wrap; column-gap: 16px; }
   .tab { min-height: 40px; padding: 0 0 13px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
   .tab[aria-selected="true"] { border-bottom-color: var(--text); color: var(--text); font-weight: 500; }
   .tab:hover:not(:disabled) { background: transparent; }
@@ -69,6 +70,7 @@
   .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; }
   h2 { margin: 0 0 4px; font-size: 14px; font-weight: 500; color: var(--text); }
   .panel-heading p, .panel-note { color: var(--muted); font-size: 12px; }
+  .write-summary { padding: 0 16px 16px; color: var(--muted); font-size: 12px; }
   .filters { display: flex; align-items: end; gap: 10px; padding: 0 16px 16px; flex-wrap: wrap; }
   .filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
   .search { flex: 1; min-width: 200px; }
@@ -182,6 +184,7 @@
         <button class="tab" id="table-tab" type="button" role="tab" aria-selected="true" aria-controls="table-view" data-view="table">Table</button>
         <button class="tab" id="charts-tab" type="button" role="tab" aria-selected="false" aria-controls="charts-view" tabindex="-1" data-view="charts">Charts</button>
         <button class="tab" id="profiling-tab" type="button" role="tab" aria-selected="false" aria-controls="profiling-view" tabindex="-1" data-view="profiling">Profiling<span class="count" id="trace-count">—</span></button>
+        <button class="tab" id="writes-tab" type="button" role="tab" aria-selected="false" aria-controls="writes-view" tabindex="-1" data-view="writes">RESP writes<span class="count" id="write-count">—</span></button>
       </div>
       <section class="panel" id="table-view" role="tabpanel" aria-labelledby="table-tab" tabindex="0">
       <div class="panel-heading"><div><h2>Benchmark results</h2><p>Median throughput and latency for each workload.</p></div><span class="panel-note">Throughput: ops/sec · Latency: ms</span></div>
@@ -206,6 +209,14 @@
           <table><thead><tr><th scope="col">Topology</th><th scope="col">Command</th><th scope="col">Variant</th><th scope="col">Clients</th><th scope="col">Node</th><th scope="col">Trace</th></tr></thead><tbody id="trace-rows"></tbody></table>
         </div>
         <div class="pagination"><span id="trace-status" role="status">Loading profiles…</span></div>
+      </section>
+      <section class="panel" id="writes-view" role="tabpanel" aria-labelledby="writes-tab" tabindex="0" hidden>
+        <div class="panel-heading"><div><h2>RESP write coalescing</h2><p>Measured during each trace capture, by EmberDB node.</p></div></div>
+        <div class="filters"><label class="search">Search writes<input id="write-search" type="search" placeholder="Search command, variant, clients, or node…"></label></div>
+        <p class="write-summary" id="write-summary" role="status"></p>
+        <div class="table-scroll" role="region" aria-label="RESP write counters" tabindex="0">
+          <table><thead><tr><th scope="col">Command</th><th scope="col">Variant</th><th scope="col">Clients</th><th scope="col">Node</th><th scope="col">Logical writes</th><th scope="col">Logical bytes</th><th scope="col">Avg B/write</th><th scope="col">Wakeups</th><th scope="col">Flushes</th><th scope="col">Flush bytes</th><th scope="col">Avg B/flush</th><th scope="col">Socket writes</th><th scope="col">Socket bytes</th><th scope="col">Avg B/write</th></tr></thead><tbody id="write-rows"></tbody></table>
+        </div>
       </section>
       <section id="charts-view" role="tabpanel" aria-labelledby="charts-tab" tabindex="0" hidden>
         <div class="panel case-panel">

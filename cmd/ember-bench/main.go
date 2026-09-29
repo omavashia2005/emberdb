@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Fusl/go-resp/doublebuffer"
 	"github.com/bytechan/resp3"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
 )
@@ -94,6 +95,24 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	}
+	if len(traces) > 0 {
+		var total doublebuffer.WriteStats
+		for _, trace := range traces {
+			if stats := trace.WriteMetrics; stats != nil {
+				total.LogicalWrites += stats.LogicalWrites
+				total.LogicalBytes += stats.LogicalBytes
+				total.Wakeups += stats.Wakeups
+				total.Flushes += stats.Flushes
+				total.FlushBytes += stats.FlushBytes
+				total.SocketWrites += stats.SocketWrites
+				total.SocketBytes += stats.SocketBytes
+			}
+		}
+		fmt.Printf("RESP write summary: logical=%d/%dB (%.1f B/write) → wakeups=%d → flushes=%d/%dB (%.1f B/flush) → socket=%d/%dB (%.1f B/write)\n",
+			total.LogicalWrites, total.LogicalBytes, average(total.LogicalBytes, total.LogicalWrites),
+			total.Wakeups, total.Flushes, total.FlushBytes, average(total.FlushBytes, total.Flushes),
+			total.SocketWrites, total.SocketBytes, average(total.SocketBytes, total.SocketWrites))
 	}
 	if *traceDir != "" {
 		if err := writeTraceIndex(*traceDir, traces); err != nil {
@@ -517,12 +536,13 @@ type report struct {
 }
 
 type traceEntry struct {
-	Mode        string `json:"mode"`
-	Command     string `json:"command"`
-	Variant     string `json:"variant"`
-	Concurrency int    `json:"concurrency"`
-	Node        string `json:"node"`
-	File        string `json:"file"`
+	Mode         string                   `json:"mode"`
+	Command      string                   `json:"command"`
+	Variant      string                   `json:"variant"`
+	Concurrency  int                      `json:"concurrency"`
+	Node         string                   `json:"node"`
+	File         string                   `json:"file"`
+	WriteMetrics *doublebuffer.WriteStats `json:"write_metrics,omitempty"`
 }
 
 type traceRecorder struct {
@@ -682,9 +702,17 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 			return err
 		}
 		pending[i] = pendingTrace{
-			entry: traceEntry{r.mode, command, variant, concurrency, node, filepath.ToSlash(rel)},
+			entry: traceEntry{Mode: r.mode, Command: command, Variant: variant, Concurrency: concurrency, Node: node, File: filepath.ToSlash(rel)},
 			url:   (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, "6060"), Path: "/debug/pprof/trace", RawQuery: "seconds=5"}).String(),
 			path:  path,
+		}
+	}
+	before := make([]doublebuffer.WriteStats, len(pending))
+	for i, p := range pending {
+		var err error
+		before[i], err = fetchWriteStats(strings.Replace(p.url, "/debug/pprof/trace?seconds=5", "/debug/resp-writes", 1))
+		if err != nil {
+			return fmt.Errorf("%s write counters before trace: %w", p.entry.Node, err)
 		}
 	}
 
@@ -712,10 +740,46 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 	if firstErr != nil {
 		return firstErr
 	}
-	for _, p := range pending {
+	for i, p := range pending {
+		after, err := fetchWriteStats(strings.Replace(p.url, "/debug/pprof/trace?seconds=5", "/debug/resp-writes", 1))
+		if err != nil {
+			return fmt.Errorf("%s write counters after trace: %w", p.entry.Node, err)
+		}
+		delta := subtractWriteStats(after, before[i])
+		p.entry.WriteMetrics = &delta
 		*r.entries = append(*r.entries, p.entry)
 	}
 	return nil
+}
+
+func fetchWriteStats(endpoint string) (doublebuffer.WriteStats, error) {
+	client := http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return doublebuffer.WriteStats{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return doublebuffer.WriteStats{}, fmt.Errorf("%s: %s", endpoint, response.Status)
+	}
+	var stats doublebuffer.WriteStats
+	err = json.NewDecoder(response.Body).Decode(&stats)
+	return stats, err
+}
+
+func subtractWriteStats(after, before doublebuffer.WriteStats) doublebuffer.WriteStats {
+	return doublebuffer.WriteStats{
+		LogicalWrites: after.LogicalWrites - before.LogicalWrites, LogicalBytes: after.LogicalBytes - before.LogicalBytes,
+		Wakeups: after.Wakeups - before.Wakeups, Flushes: after.Flushes - before.Flushes, FlushBytes: after.FlushBytes - before.FlushBytes,
+		SocketWrites: after.SocketWrites - before.SocketWrites, SocketBytes: after.SocketBytes - before.SocketBytes,
+	}
+}
+
+func average(bytes, calls uint64) float64 {
+	if calls == 0 {
+		return 0
+	}
+	return float64(bytes) / float64(calls)
 }
 
 func downloadTrace(traceURL, path string) error {

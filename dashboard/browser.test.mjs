@@ -18,7 +18,9 @@ let status = 200;
 const html = await readFile(new URL('../scripts/bench-dashboard.html', import.meta.url));
 const traces = [
   { mode: 'cluster', command: 'GET', variant: '100% hit', concurrency: 50, node: 'node2', file: 'cluster/GET 100% hit 50/node2.trace' },
-  { mode: 'standalone', command: 'MSET', variant: 'new', concurrency: 1, node: 'standalone', file: 'standalone/mset.trace' },
+  { mode: 'standalone', command: 'MSET', variant: 'new', concurrency: 1, node: 'standalone', file: 'standalone/mset.trace', write_metrics: {
+    logical_writes: 10, logical_bytes: 200, wakeups: 8, flushes: 5, flush_bytes: 200, socket_writes: 5, socket_bytes: 200,
+  } },
 ];
 const server = createServer((request, response) => {
   if (request.url === '/results.json') {
@@ -57,6 +59,13 @@ try {
   await page.fill('#trace-search', 'missing');
   assert.match(await text('#trace-rows'), /No matching profiles/);
   await page.fill('#trace-search', '');
+  await page.click('#standalone-tab');
+  await page.click('#writes-tab');
+  assert.match(await text('#write-summary'), /10 logical writes \(20 B\/write\).*5 flushes \(40 B\/flush\).*5 socket writes/);
+  assert.match(await text('#write-rows'), /MSET.*standalone.*10.*200.*20.*8.*5.*200.*40.*5.*200.*40/);
+  await page.click('#cluster-tab');
+  assert.match(await text('#write-rows'), /No write metrics yet/);
+  await page.click('#standalone-tab');
   await page.click('#table-tab');
   await page.click('#standalone-tab');
   assert.equal(await text('#result-count'), '49');

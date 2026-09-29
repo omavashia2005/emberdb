@@ -6,9 +6,45 @@ let mode: Mode = 'standalone';
 let page = 0;
 const pageSize = 20;
 const number = (value: number) => Number.isFinite(value) ? value.toLocaleString() : '—';
-type Trace = { mode: string; command: string; variant: string; concurrency: number; node: string; file: string };
+const writeStatsKeys = ['logical_writes', 'logical_bytes', 'wakeups', 'flushes', 'flush_bytes', 'socket_writes', 'socket_bytes'] as const;
+type WriteStats = Record<typeof writeStatsKeys[number], number>;
+type Trace = { mode: string; command: string; variant: string; concurrency: number; node: string; file: string; write_metrics?: WriteStats };
 let traces: Trace[] = [];
 let traceError = '';
+const avg = (bytes: number, calls: number) => calls ? (bytes / calls).toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—';
+
+function renderWrites() {
+  const search = $<HTMLInputElement>('write-search').value.trim().toLowerCase();
+  const source = traces.filter(trace => trace.mode === mode && trace.write_metrics);
+  const rows = source.filter(trace => `${trace.command} ${trace.variant} ${trace.concurrency} ${trace.node}`.toLowerCase().includes(search));
+  $('write-rows').replaceChildren();
+  const total = Object.fromEntries(writeStatsKeys.map(key => [key, rows.reduce((sum, trace) => sum + trace.write_metrics![key], 0)])) as WriteStats;
+  for (const trace of rows) {
+    const stats = trace.write_metrics!;
+    const tr = document.createElement('tr');
+    for (const value of [trace.command, trace.variant, number(trace.concurrency), trace.node,
+      number(stats.logical_writes), number(stats.logical_bytes), avg(stats.logical_bytes, stats.logical_writes),
+      number(stats.wakeups), number(stats.flushes), number(stats.flush_bytes), avg(stats.flush_bytes, stats.flushes),
+      number(stats.socket_writes), number(stats.socket_bytes), avg(stats.socket_bytes, stats.socket_writes)]) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    $('write-rows').appendChild(tr);
+  }
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 14;
+    td.className = 'empty';
+    td.textContent = search && source.length ? 'No matching write metrics.' : traceError || 'No write metrics yet. Run the profiling benchmark to capture them.';
+    tr.appendChild(td);
+    $('write-rows').appendChild(tr);
+  }
+  $('write-count').textContent = number(source.length);
+  $('write-summary').textContent = rows.length ?
+    `${number(rows.length)} captures · ${number(total.logical_writes)} logical writes (${avg(total.logical_bytes, total.logical_writes)} B/write) → ${number(total.wakeups)} wakeups → ${number(total.flushes)} flushes (${avg(total.flush_bytes, total.flushes)} B/flush) → ${number(total.socket_writes)} socket writes (${avg(total.socket_bytes, total.socket_writes)} B/write)` : '';
+}
 
 function renderTraces() {
   const search = $<HTMLInputElement>('trace-search').value.trim().toLowerCase();
@@ -53,13 +89,15 @@ async function loadTraces() {
     const data: unknown = await response.json();
     if (!Array.isArray(data) || !data.every((trace: unknown) => trace && typeof trace === 'object' &&
       ['mode', 'command', 'variant', 'node', 'file'].every(key => typeof (trace as Record<string, unknown>)[key] === 'string') &&
-      typeof (trace as Trace).concurrency === 'number')) throw new Error('invalid trace index');
+      typeof (trace as Trace).concurrency === 'number' && ((trace as Trace).write_metrics == null ||
+      writeStatsKeys.every(key => typeof (trace as Trace).write_metrics?.[key] === 'number' && Number.isFinite((trace as Trace).write_metrics?.[key]) && (trace as Trace).write_metrics![key] >= 0)))) throw new Error('invalid trace index');
     traces = data as Trace[];
     traceError = '';
   } catch (error) {
     traceError = `Profiles unavailable (${error instanceof Error ? error.message : String(error)}). Run the profiling benchmark to generate traces/index.json.`;
   }
   renderTraces();
+  renderWrites();
 }
 
 function render() {
@@ -130,6 +168,7 @@ function selectMode(nextMode: Mode) {
   $('results').setAttribute('aria-labelledby', `${mode}-tab`);
   render();
   renderTraces();
+  renderWrites();
   updateCharts(report?.[mode] || []);
 }
 
@@ -210,3 +249,4 @@ viewTabs.forEach((tab, index) => {
 load();
 loadTraces();
 $<HTMLInputElement>('trace-search').addEventListener('input', renderTraces);
+$<HTMLInputElement>('write-search').addEventListener('input', renderWrites);

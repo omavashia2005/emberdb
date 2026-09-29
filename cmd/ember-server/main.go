@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/Fusl/go-resp"
+	"github.com/Fusl/go-resp/doublebuffer"
 	"github.com/bytechan/resp3"
 	"github.com/omavashia2005/emberdb/utils"
 	"github.com/omavashia2005/emberdb/utils/clusters"
@@ -958,6 +959,12 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 	defer listener.Close()
 
 	pprofAddr := os.Getenv("EMBERDB_PPROF_ADDR")
+	if os.Getenv("EMBERDB_RESP_WRITE_PROFILE") == "1" {
+		http.HandleFunc("/debug/resp-writes", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(doublebuffer.Snapshot())
+		})
+	}
 	if pprofAddr == "" {
 		pprofAddr = "127.0.0.1:6060"
 	}
