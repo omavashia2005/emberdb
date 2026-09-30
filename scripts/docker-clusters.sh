@@ -20,7 +20,7 @@ $compose up -d --build
 wait_for() {
   host=$1
   attempts=0
-  until $compose exec -T benchmark-client redis-cli -h "$host" -p 6379 PING >/dev/null 2>&1; do
+  until $compose exec -T benchmark-client timeout 2 redis-cli -h "$host" -p 6379 PING >/dev/null 2>&1; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 60 ]; then
       echo "timed out waiting for $host" >&2

@@ -455,11 +455,12 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			}
 
 			key := string(args[0])
-			val := kv.Get(key)
 
 			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
+
+			val := kv.Get(key)
 
 			if val == "(nil)" {
 				rconn.WriteStatusString("No such key")
