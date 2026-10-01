@@ -3,6 +3,7 @@
 
 import importlib.util
 import errno
+import io
 import json
 import pathlib
 import sys
@@ -21,12 +22,16 @@ spec.loader.exec_module(server_module)
 def main():
     with tempfile.TemporaryDirectory() as temp:
         root = pathlib.Path(temp, "results").resolve()
-        (root / "traces").mkdir(parents=True)
-        (root / "traces/node1.trace").write_bytes(b"trace")
+        (root / "traces/emberdb/cluster").mkdir(parents=True)
+        (root / "traces/redis/cluster").mkdir(parents=True)
+        (root / "traces/emberdb/cluster/node1.trace").write_bytes(b"trace")
+        (root / "traces/redis/cluster/node1.trace").write_bytes(b"pprof")
         (root / "traces/unlisted.trace").write_bytes(b"trace")
         (root.parent / "outside.trace").write_bytes(b"trace")
         (root / "traces/index.json").write_text(json.dumps([
-            {"file": "traces/node1.trace"}, {"file": "../outside.trace"},
+            {"file": "traces/emberdb/cluster/node1.trace", "product": "EmberDB"},
+            {"file": "traces/redis/cluster/node1.trace", "product": "Redis"},
+            {"file": "../outside.trace"},
         ]))
         server = server_module.BenchmarkServer.__new__(server_module.BenchmarkServer)
         server.directory = root
@@ -38,7 +43,8 @@ def main():
             handler = server_module.Handler.__new__(server_module.Handler)
             handler.path = f"/trace?file={filename}"
             handler.server = server
-            response = SimpleNamespace(status=None, headers={})
+            response = SimpleNamespace(status=None, headers={}, body=io.BytesIO())
+            handler.wfile = response.body
             handler.send_error = lambda code, *args: setattr(response, "status", code)
             handler.send_response = lambda code: setattr(response, "status", code)
             handler.send_header = lambda key, value: response.headers.__setitem__(key, value)
@@ -55,7 +61,7 @@ def main():
 
         with patch.object(server_module.subprocess, "run", side_effect=docker) as run, \
              patch.object(server_module.urllib.request, "urlopen", return_value=nullcontext()):
-            response = request("traces/node1.trace")
+            response = request("traces/emberdb/cluster/node1.trace")
             assert response.status == 302
             assert response.headers["Location"] == "http://127.0.0.1:49123/"
             build = run.call_args_list[0]
@@ -65,12 +71,22 @@ def main():
             assert command == [
                 "docker", "run", "-d", "--rm", "-p", "127.0.0.1::7070",
                 "-v", f"{root}:/results:ro", "emberdb-trace-viewer:go1.25", "go", "tool", "trace",
-                "-http=0.0.0.0:7070", "/results/traces/node1.trace",
+                "-http=0.0.0.0:7070", "/results/traces/emberdb/cluster/node1.trace",
             ]
             assert run.call_args_list[2].args[0] == ["docker", "port", "container-id", "7070/tcp"]
+            redis_response = request("traces/redis/cluster/node1.trace")
+            assert redis_response.status == 302
+            assert redis_response.headers["Location"] == "http://127.0.0.1:49123/"
+            assert run.call_args_list[3].args[0] == ["docker", "stop", "container-id"]
+            assert run.call_args_list[4].args[0] == [
+                "docker", "run", "-d", "--rm", "-p", "127.0.0.1::7070",
+                "-v", f"{root}:/results:ro", "emberdb-trace-viewer:go1.25", "go", "tool", "pprof",
+                "-http=0.0.0.0:7070", "-no_browser", "/results/traces/redis/cluster/node1.trace",
+            ]
+            assert run.call_args_list[5].args[0] == ["docker", "port", "container-id", "7070/tcp"]
             assert request("traces/unlisted.trace").status == 404
             assert request("../outside.trace").status == 404
-            assert run.call_count == 3
+            assert run.call_count == 6
             server.stop_viewer()
             assert run.call_args.args[0] == ["docker", "stop", "container-id"]
 

@@ -17,7 +17,8 @@ let report = structuredClone(fixture);
 let status = 200;
 const html = await readFile(new URL('../scripts/bench-dashboard.html', import.meta.url));
 const traces = [
-  { mode: 'cluster', command: 'GET', variant: '100% hit', concurrency: 50, node: 'node2', file: 'cluster/GET 100% hit 50/node2.trace' },
+  { product: 'EmberDB', mode: 'cluster', command: 'GET', variant: '100% hit', concurrency: 50, node: 'node2', file: 'traces/emberdb/cluster/GET 100% hit 50/node2.trace' },
+  { product: 'Redis', mode: 'cluster', command: 'GET', variant: '100% hit', concurrency: 50, node: 'node2', file: 'traces/redis/cluster/GET 100% hit 50/node2.trace' },
   { mode: 'standalone', command: 'MSET', variant: 'new', concurrency: 1, node: 'standalone', file: 'standalone/mset.trace', write_metrics: {
     logical_writes: 10, logical_bytes: 200, wakeups: 8, flushes: 5, flush_bytes: 200, socket_writes: 5, socket_bytes: 200,
   } },
@@ -51,11 +52,15 @@ try {
   assert.equal(await page.locator('#trace-rows tr').count(), 1);
   assert.match(await text('#trace-rows'), /standalone.*MSET/i);
   await page.click('#cluster-tab');
+  assert.equal(await page.locator('#trace-rows tr').count(), 2);
+  assert.match(await text('#trace-rows'), /EmberDB.*Redis/);
+  await page.fill('#trace-search', 'EmberDB cluster get 100% hit 50 node2');
   assert.equal(await page.locator('#trace-rows tr').count(), 1);
-  await page.fill('#trace-search', 'cluster get 100% hit 50 node2');
-  assert.equal(await page.locator('#trace-rows tr').count(), 1);
-  assert.equal(await page.locator('#trace-rows a').getAttribute('href'), '/trace?file=cluster%2FGET%20100%25%20hit%2050%2Fnode2.trace');
+  assert.equal(await page.locator('#trace-rows a').getAttribute('href'), '/trace?file=traces%2Femberdb%2Fcluster%2FGET%20100%25%20hit%2050%2Fnode2.trace');
   assert.equal(await page.locator('#trace-rows a').getAttribute('target'), '_blank');
+  await page.fill('#trace-search', 'Redis');
+  assert.equal(await page.locator('#trace-rows tr').count(), 1);
+  assert.equal(await page.locator('#trace-rows a').getAttribute('href'), '/trace?file=traces%2Fredis%2Fcluster%2FGET%20100%25%20hit%2050%2Fnode2.trace');
   await page.fill('#trace-search', 'missing');
   assert.match(await text('#trace-rows'), /No matching profiles/);
   await page.fill('#trace-search', '');

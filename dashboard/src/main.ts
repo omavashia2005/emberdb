@@ -8,7 +8,7 @@ const pageSize = 20;
 const number = (value: number) => Number.isFinite(value) ? value.toLocaleString() : '—';
 const writeStatsKeys = ['logical_writes', 'logical_bytes', 'wakeups', 'flushes', 'flush_bytes', 'socket_writes', 'socket_bytes'] as const;
 type WriteStats = Record<typeof writeStatsKeys[number], number>;
-type Trace = { mode: string; command: string; variant: string; concurrency: number; node: string; file: string; write_metrics?: WriteStats };
+type Trace = { product?: string; mode: string; command: string; variant: string; concurrency: number; node: string; file: string; write_metrics?: WriteStats };
 let traces: Trace[] = [];
 let traceError = '';
 const avg = (bytes: number, calls: number) => calls ? (bytes / calls).toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—';
@@ -49,11 +49,11 @@ function renderWrites() {
 function renderTraces() {
   const search = $<HTMLInputElement>('trace-search').value.trim().toLowerCase();
   const source = traces.filter(trace => trace.mode === mode);
-  const rows = source.filter(trace => Object.values(trace).join(' ').toLowerCase().includes(search));
+  const rows = source.filter(trace => `${trace.product || 'EmberDB'} ${Object.values(trace).join(' ')}`.toLowerCase().includes(search));
   $('trace-rows').replaceChildren();
   for (const trace of rows) {
     const tr = document.createElement('tr');
-    for (const value of [trace.mode, trace.command, trace.variant, `${trace.concurrency}`, trace.node]) {
+    for (const value of [trace.product || 'EmberDB', trace.mode, trace.command, trace.variant, `${trace.concurrency}`, trace.node]) {
       const td = document.createElement('td');
       td.textContent = value;
       tr.appendChild(td);
@@ -63,8 +63,8 @@ function renderTraces() {
     link.href = `/trace?file=${encodeURIComponent(trace.file)}`;
     link.target = '_blank';
     link.rel = 'noopener';
-    link.textContent = 'Open trace';
-    link.setAttribute('aria-label', `Open trace: ${trace.mode} ${trace.command} ${trace.variant}, ${trace.concurrency} clients, ${trace.node}`);
+    link.textContent = 'Open profile';
+    link.setAttribute('aria-label', `Open profile: ${trace.product || 'EmberDB'} ${trace.mode} ${trace.command} ${trace.variant}, ${trace.concurrency} clients, ${trace.node}`);
     td.appendChild(link);
     tr.appendChild(td);
     $('trace-rows').appendChild(tr);
@@ -72,7 +72,7 @@ function renderTraces() {
   if (!rows.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.className = 'empty';
     td.textContent = search && source.length ? 'No matching profiles.' : traceError || 'No profiles yet for this topology. Run the profiling benchmark to capture traces.';
     tr.appendChild(td);
@@ -89,6 +89,7 @@ async function loadTraces() {
     const data: unknown = await response.json();
     if (!Array.isArray(data) || !data.every((trace: unknown) => trace && typeof trace === 'object' &&
       ['mode', 'command', 'variant', 'node', 'file'].every(key => typeof (trace as Record<string, unknown>)[key] === 'string') &&
+      ((trace as Trace).product == null || typeof (trace as Trace).product === 'string') &&
       typeof (trace as Trace).concurrency === 'number' && ((trace as Trace).write_metrics == null ||
       writeStatsKeys.every(key => typeof (trace as Trace).write_metrics?.[key] === 'number' && Number.isFinite((trace as Trace).write_metrics?.[key]) && (trace as Trace).write_metrics![key] >= 0)))) throw new Error('invalid trace index');
     traces = data as Trace[];

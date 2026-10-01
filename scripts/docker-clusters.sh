@@ -11,6 +11,9 @@ esac
 case "$submode" in all|standalone|cluster) ;; *) echo "submode must be standalone, cluster, or all" >&2; exit 2 ;; esac
 
 compose="docker compose -p emberdb-bench -f compose.benchmark.yaml"
+if [ "$mode" = bench ] && [ -n "${TRACE_DIR:-}" ]; then
+  compose="$compose -f compose.redis-profiler.yaml"
+fi
 cleanup() { $compose down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 

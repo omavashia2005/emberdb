@@ -53,7 +53,7 @@ func main() {
 	requests := flag.Int("requests", requestsDefault, "measured requests per repeat")
 	warmup := flag.Int("warmup", warmupDefault, "warmup requests before each measured set")
 	out := flag.String("out", "benchmark-results/results.json", "raw results JSON path")
-	traceDir := flag.String("trace-dir", "", "capture one 5-second pprof trace per EmberDB case and node in this directory")
+	traceDir := flag.String("trace-dir", "", "capture one 5-second trace per product, case, and node in this directory")
 	flag.Parse()
 
 	if *requests < 1 || *warmup < 0 {
@@ -76,13 +76,13 @@ func main() {
 	if *mode == "all" || *mode == "standalone" {
 		fmt.Println("=== STANDALONE ===")
 		report.Standalone = append(report.Standalone, runProduct("EmberDB", "standalone", []string{*emberStandalone}, *requests, *warmup, *traceDir, &traces, &profileBatches)...)
-		report.Standalone = append(report.Standalone, runProduct("Redis", "standalone", []string{*redisStandalone}, *requests, *warmup, "", nil, nil)...)
+		report.Standalone = append(report.Standalone, runProduct("Redis", "standalone", []string{*redisStandalone}, *requests, *warmup, *traceDir, &traces, &profileBatches)...)
 		printTable(report.Standalone)
 	}
 	if *mode == "all" || *mode == "cluster" {
 		fmt.Println("=== 3-NODE CLUSTER ===")
 		report.Cluster = append(report.Cluster, runProduct("EmberDB", "cluster", split(*emberCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
-		report.Cluster = append(report.Cluster, runProduct("Redis", "cluster", split(*redisCluster), *requests, *warmup, "", nil, nil)...)
+		report.Cluster = append(report.Cluster, runProduct("Redis", "cluster", split(*redisCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
 		printTable(report.Cluster)
 	}
 
@@ -536,6 +536,7 @@ type report struct {
 }
 
 type traceEntry struct {
+	Product      string                   `json:"product"`
 	Mode         string                   `json:"mode"`
 	Command      string                   `json:"command"`
 	Variant      string                   `json:"variant"`
@@ -546,6 +547,7 @@ type traceEntry struct {
 }
 
 type traceRecorder struct {
+	product string
 	dir     string
 	mode    string
 	addrs   []string
@@ -568,9 +570,12 @@ type profileBatch struct {
 func (b profileBatch) run() error {
 	workers := newWorkers(maxConcurrency)
 	defer closeWorkers(workers)
+	if b.recorder.product == "Redis" {
+		return b.runRedis(workers)
+	}
 	for _, c := range b.cases {
 		if err := b.recorder.capture(c.command, c.variant, c.concurrency, b.requests, workers, c.gen); err != nil {
-			return fmt.Errorf("EmberDB %s %s profile %s c=%d: %w", b.recorder.mode, c.command, c.variant, c.concurrency, err)
+			return fmt.Errorf("%s %s %s profile %s c=%d: %w", b.recorder.product, b.recorder.mode, c.command, c.variant, c.concurrency, err)
 		}
 	}
 	return nil
@@ -651,7 +656,7 @@ func runProduct(product, mode string, addrs []string, requests, warmup int, trac
 		}
 	}
 	if caseList != nil {
-		*batches = append(*batches, profileBatch{traceRecorder{traceDir, mode, addrs, traces}, requests, cases})
+		*batches = append(*batches, profileBatch{traceRecorder{product: product, dir: traceDir, mode: mode, addrs: addrs, entries: traces}, requests, cases})
 	}
 	return results
 }
@@ -675,8 +680,8 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 	if variantID == "" {
 		return fmt.Errorf("unknown trace variant %q", variant)
 	}
-	fmt.Printf("Profiling %s %s %s c=%d\n", r.mode, command, variant, concurrency)
-	dir := filepath.Join(r.dir, r.mode)
+	fmt.Printf("Profiling %s %s %s %s c=%d\n", r.product, r.mode, command, variant, concurrency)
+	dir := filepath.Join(r.dir, strings.ToLower(r.product), r.mode)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -702,7 +707,7 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 			return err
 		}
 		pending[i] = pendingTrace{
-			entry: traceEntry{Mode: r.mode, Command: command, Variant: variant, Concurrency: concurrency, Node: node, File: filepath.ToSlash(rel)},
+			entry: traceEntry{Product: r.product, Mode: r.mode, Command: command, Variant: variant, Concurrency: concurrency, Node: node, File: filepath.ToSlash(rel)},
 			url:   (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, "6060"), Path: "/debug/pprof/trace", RawQuery: "seconds=5"}).String(),
 			path:  path,
 		}

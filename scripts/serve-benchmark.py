@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve benchmark results and one selected Go 1.25 trace viewer."""
+"""Serve benchmark results and product-specific trace views."""
 
 import errno
 import functools
@@ -28,7 +28,7 @@ class BenchmarkServer(HTTPServer):
             self.viewer = None
             self.viewer_url = None
 
-    def open_trace(self, filename):
+    def open_trace(self, filename, product):
         self.stop_viewer()
         if not self.image_ready:
             subprocess.run(
@@ -37,10 +37,12 @@ class BenchmarkServer(HTTPServer):
                 capture_output=True, text=True, check=True,
             )
             self.image_ready = True
+        viewer_command = (["go", "tool", "pprof", "-http=0.0.0.0:7070", "-no_browser"] if product == "Redis"
+                          else ["go", "tool", "trace", "-http=0.0.0.0:7070"])
         result = subprocess.run(
             ["docker", "run", "-d", "--rm", "-p", "127.0.0.1::7070",
              "-v", f"{self.directory}:/results:ro", self.viewer_image,
-             "go", "tool", "trace", "-http=0.0.0.0:7070", f"/results/{filename}"],
+             *viewer_command, f"/results/{filename}"],
             capture_output=True, text=True, check=True,
         )
         self.viewer = result.stdout.strip()
@@ -77,7 +79,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not index_path.is_file():
                 return self.send_error(404, "no traces available")
             index = json.loads(index_path.read_text())
-            allowed = {entry["file"] for entry in index}
+            allowed = {entry["file"]: entry for entry in index}
             path = (self.server.directory / filename).resolve()
             if filename not in allowed or not path.is_file() or path.suffix != ".trace":
                 return self.send_error(404, "trace not found")
@@ -85,7 +87,7 @@ class Handler(SimpleHTTPRequestHandler):
                 path.relative_to(self.server.directory)
             except ValueError:
                 return self.send_error(404, "trace not found")
-            self.server.open_trace(filename)
+            self.server.open_trace(filename, allowed[filename].get("product"))
         except subprocess.CalledProcessError as exc:
             return self.send_error(500, f"trace viewer failed: {(exc.stderr or str(exc)).strip()}")
         except (OSError, ValueError, KeyError, TypeError, IndexError, RuntimeError) as exc:
