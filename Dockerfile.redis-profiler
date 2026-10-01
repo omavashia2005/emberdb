@@ -1,0 +1,10 @@
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY cmd/redis-profiler/main.go .
+RUN CGO_ENABLED=0 go build -o /redis-profiler main.go
+
+FROM redis:7-bookworm
+RUN apt-get update -qq && apt-get install -y --no-install-recommends libgoogle-perftools4 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /redis-profiler /usr/local/bin/redis-profiler
+USER redis
+ENTRYPOINT ["redis-profiler"]
