@@ -9,3 +9,5 @@ benchmark-results/
 /node3.trace
 /.DS_Store
 .vscode
+/utils/.DS_Store
+/cmd/.DS_Store

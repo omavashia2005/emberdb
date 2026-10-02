@@ -608,10 +608,16 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				}
 			}
 
+			keys := make([]string, len(args))
+			values := make([]string, len(args))
+
 			for i := 0; i < len(args); i += 2 {
 				key, val := string(args[i]), string(args[i+1])
-				kv.Set(key, val)
+				keys = append(keys, key)
+				values = append(values, val)
 			}
+
+			kv.Mset(keys, values)
 
 			rconn.WriteOK()
 
