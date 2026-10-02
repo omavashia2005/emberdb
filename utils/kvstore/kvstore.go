@@ -106,22 +106,17 @@ func (kv *KVStore) Set(key, value string) {
 func (kv *KVStore) Mset(keys, values []string) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	// TODO add persistence for MSET
-	// if kv.persist("SET", key, value) != nil {
-	// 	return
-	// }
-	i := 0
+	
+	// TODO: add persistence for MSET
 
-	for i = range len(keys){
-		key := keys[i]
+	for i, key := range keys {
 		value := values[i]
 		if kv.clusterEnabled {
 			kv.setValue(key, Value{Type: StringType, String: value})
-			return
+			continue
 		}
 		kv.Strings[key] = value
 	}
-
 }
 
 func (kv *KVStore) Get(key string) string {
