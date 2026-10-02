@@ -8,5 +8,4 @@ benchmark-results/
 /node2.trace
 /node3.trace
 /.DS_Store
-/utils/go-resp
 .vscode
