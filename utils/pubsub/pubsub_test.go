@@ -1,16 +1,18 @@
 package pubsub
 
-import "testing"
+import (
+	"testing"
 
-func TestUnsubscribeStopsDeliveryAndClosesSubscriber(t *testing.T) {
+	"github.com/panjf2000/gnet/v2"
+)
+
+func TestUnsubscribeStopsDelivery(t *testing.T) {
 	ps := NewPubSub()
-	subscriber := Subscribe("updates", ps)
-	Unsubscribe("updates", subscriber, ps)
+	var c gnet.Conn // nil conn is a valid map key; never written to after unsubscribe
+	Subscribe("updates", c, ps)
+	Unsubscribe("updates", c, ps)
 
 	if got := Publish("updates", "message", ps); got != 0 {
 		t.Fatalf("Publish count = %d, want 0", got)
-	}
-	if _, open := <-subscriber; open {
-		t.Fatal("subscriber channel remained open")
 	}
 }

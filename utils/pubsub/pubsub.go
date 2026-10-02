@@ -1,95 +1,64 @@
 package pubsub
 
 import (
-	"sync"
+	"strconv"
+
+	"github.com/panjf2000/gnet/v2"
 )
 
-type Subscription struct {
-	channel     string
-	subscribers []chan string
-}
+// PubSub is accessed only on the event loop (SUBSCRIBE/PUBLISH from command
+// dispatch, UNSUBSCRIBE from dispatch and OnClose), so it needs no lock. Fan-out
+// to subscribers uses gnet's concurrency-safe AsyncWrite, which schedules the
+// write on the subscriber conn's loop.
 type PubSub struct {
-	subscriptions map[string]*Subscription
-	mu            sync.RWMutex
+	subscriptions map[string]map[gnet.Conn]struct{}
 }
 
 func NewPubSub() *PubSub {
-	return &PubSub{
-		subscriptions: make(map[string]*Subscription),
-	}
+	return &PubSub{subscriptions: make(map[string]map[gnet.Conn]struct{})}
 }
 
-func Subscribe(channel string, ps *PubSub) chan string {
-
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	sub, ok := ps.subscriptions[channel]
-	if !ok {
-		sub = &Subscription{
-			channel:     channel,
-			subscribers: make([]chan string, 0),
-		}
-
-		ps.subscriptions[channel] = sub
+func Subscribe(channel string, c gnet.Conn, ps *PubSub) {
+	subs := ps.subscriptions[channel]
+	if subs == nil {
+		subs = make(map[gnet.Conn]struct{})
+		ps.subscriptions[channel] = subs
 	}
-
-	ch := make(chan string, 1)
-	sub.subscribers = append(sub.subscribers, ch)
-
-	return ch
+	subs[c] = struct{}{}
 }
 
-func Unsubscribe(channel string, subscriber chan string, ps *PubSub) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	sub, ok := ps.subscriptions[channel]
-	if !ok {
+func Unsubscribe(channel string, c gnet.Conn, ps *PubSub) {
+	subs := ps.subscriptions[channel]
+	if subs == nil {
 		return
 	}
-	for i, ch := range sub.subscribers {
-		if ch == subscriber {
-			sub.subscribers = append(sub.subscribers[:i], sub.subscribers[i+1:]...)
-			close(ch)
-			break
-		}
-	}
-	if len(sub.subscribers) == 0 {
+	delete(subs, c)
+	if len(subs) == 0 {
 		delete(ps.subscriptions, channel)
 	}
 }
 
-func UnsubscribeAll(ps *PubSub) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	for _, sub := range ps.subscriptions {
-		for _, ch := range sub.subscribers {
-			close(ch)
-		}
-	}
-	ps.subscriptions = make(map[string]*Subscription)
-}
-
+// Publish sends message as a RESP bulk string to every subscriber of channel and
+// returns the number of subscribers it was delivered to.
 func Publish(channel string, message string, ps *PubSub) int {
-
-	ps.mu.RLock()
-	defer ps.mu.RUnlock()
-
-	subs, ok := ps.subscriptions[channel]
-	count := 0
-	if !ok {
-		return count
+	subs := ps.subscriptions[channel]
+	if len(subs) == 0 {
+		return 0
 	}
 
-	for _, subscriber := range subs.subscribers {
+	// $<len>\r\n<message>\r\n — matches the previous bulk-string delivery.
+	frame := make([]byte, 0, len(message)+16)
+	frame = append(frame, '$')
+	frame = strconv.AppendInt(frame, int64(len(message)), 10)
+	frame = append(frame, '\r', '\n')
+	frame = append(frame, message...)
+	frame = append(frame, '\r', '\n')
 
-		select {
-		case subscriber <- message:
+	count := 0
+	for c := range subs {
+		if err := c.AsyncWrite(frame, nil); err == nil {
 			count++
-		default:
 		}
-
 	}
 	return count
 }
