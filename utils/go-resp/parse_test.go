@@ -11,13 +11,13 @@ func TestParseCommandByteByByte(t *testing.T) {
 	want := [][]byte{[]byte("SET"), []byte("foo"), []byte("bar")}
 
 	for i := 1; i < len(full); i++ {
-		args, consumed, err := ParseCommand(full[:i])
+		args, consumed, err := ParseCommand(full[:i], nil)
 		if !errors.Is(err, ErrIncomplete) {
 			t.Fatalf("prefix len %d: got err=%v args=%v consumed=%d, want ErrIncomplete", i, err, args, consumed)
 		}
 	}
 
-	args, consumed, err := ParseCommand(full)
+	args, consumed, err := ParseCommand(full, nil)
 	if err != nil {
 		t.Fatalf("full buffer: unexpected err: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestParseCommandTwoConcatenated(t *testing.T) {
 	second := []byte("*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n")
 	buf := append(append([]byte{}, first...), second...)
 
-	args, consumed, err := ParseCommand(buf)
+	args, consumed, err := ParseCommand(buf, nil)
 	if err != nil {
 		t.Fatalf("first parse: unexpected err: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestParseCommandTwoConcatenated(t *testing.T) {
 		t.Fatalf("first parse: got args=%v, want [PING]", args)
 	}
 
-	args2, consumed2, err := ParseCommand(buf[consumed:])
+	args2, consumed2, err := ParseCommand(buf[consumed:], nil)
 	if err != nil {
 		t.Fatalf("second parse: unexpected err: %v", err)
 	}

@@ -9,9 +9,12 @@ import (
 // arguments and the number of bytes consumed from buf. If buf does not yet hold a
 // complete command it returns (nil, 0, ErrIncomplete). On a protocol violation it
 // returns a non-nil error that is not ErrIncomplete.
-// The returned [][]byte point into buf (no copy); the caller must consume them
-// before mutating/discarding buf.
-func ParseCommand(buf []byte) (args [][]byte, consumed int, err error) {
+//
+// dst is an optional scratch slice whose backing array is reused for the returned
+// args, letting a caller avoid an allocation per command (pass the same slice back
+// each call). Pass nil to allocate fresh. The returned [][]byte point into buf (no
+// copy); the caller must consume them before mutating/discarding buf or reusing dst.
+func ParseCommand(buf []byte, dst [][]byte) (args [][]byte, consumed int, err error) {
 	// ponytail: inline commands are unsupported for now (RESP arrays only).
 	if len(buf) == 0 {
 		return nil, 0, ErrIncomplete
@@ -32,11 +35,11 @@ func ParseCommand(buf []byte) (args [][]byte, consumed int, err error) {
 	}
 	if n <= 0 {
 		// Empty / negative array: consume the header only.
-		return [][]byte{}, len(buf) - len(rest), nil
+		return dst[:0], len(buf) - len(rest), nil
 	}
 
 	p := len(buf) - len(rest)
-	refs := make([][]byte, n)
+	refs := dst[:0]
 	for i := 0; i < n; i++ {
 		// Each element must be a bulk string: $<len>\r\n<bytes>\r\n
 		if p >= len(buf) {
@@ -59,7 +62,7 @@ func ParseCommand(buf []byte) (args [][]byte, consumed int, err error) {
 		if p+l+2 > len(buf) {
 			return nil, 0, ErrIncomplete
 		}
-		refs[i] = buf[p : p+l]
+		refs = append(refs, buf[p:p+l])
 		p += l + 2
 	}
 	return refs, p, nil
