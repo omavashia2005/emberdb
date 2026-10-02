@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -83,13 +83,17 @@ func clusterSlots() []any {
 	return ranges
 }
 
-// connState is per-connection state attached to each gnet.Conn. The resp.Server
-// writes replies straight into the conn's gnet outbound buffer, which gnet flushes
-// once after OnTraffic returns (the beforeSleep-equivalent batched write).
+// connState is per-connection state attached to each gnet.Conn. Replies are
+// encoded into out, then flushed to the socket in a single Write at the end of
+// OnTraffic — gnet.Conn.Write issues a syscall per call, so batching the whole
+// read's replies into one buffer is what keeps multi-reply commands (MGET) and
+// pipelines to one write. args is reused scratch for the command parser.
 type connState struct {
 	c    gnet.Conn
+	out  bytes.Buffer
 	enc  *resp.Server
 	subs map[string]struct{}
+	args [][]byte
 }
 
 // emberHandler is the single-threaded event loop. All kvstore, serverState and
@@ -102,11 +106,9 @@ type emberHandler struct {
 }
 
 func (h *emberHandler) OnOpen(c gnet.Conn) ([]byte, gnet.Action) {
-	c.SetContext(&connState{
-		c:    c,
-		enc:  resp.NewWriter(c),
-		subs: make(map[string]struct{}),
-	})
+	cs := &connState{c: c, subs: make(map[string]struct{})}
+	cs.enc = resp.NewWriter(&cs.out)
+	c.SetContext(cs)
 	return nil, gnet.None
 }
 
@@ -121,23 +123,34 @@ func (h *emberHandler) OnClose(c gnet.Conn, _ error) gnet.Action {
 
 func (h *emberHandler) OnTraffic(c gnet.Conn) gnet.Action {
 	cs := c.Context().(*connState)
+	action := gnet.None
 	for {
 		buf, _ := c.Peek(-1)
 		if len(buf) == 0 {
 			break
 		}
-		args, consumed, err := resp.ParseCommand(buf)
+		args, consumed, err := resp.ParseCommand(buf, cs.args)
 		if errors.Is(err, resp.ErrIncomplete) {
 			break
 		}
 		if err != nil {
 			cs.enc.WriteError(err)
-			return gnet.Close
+			action = gnet.Close
+			break
 		}
-		h.dispatch(cs, args)
-		c.Discard(consumed)
+		if len(args) > 0 {
+			cs.args = args[:0] // keep the backing array for the next parse
+			h.dispatch(cs, args)
+		}
+		c.Discard(consumed) // after dispatch: args alias the peeked buffer
 	}
-	return gnet.None
+	// One syscall for every reply produced by this read; gnet copies any tail it
+	// can't write immediately, so resetting out here is safe.
+	if cs.out.Len() > 0 {
+		c.Write(cs.out.Bytes())
+		cs.out.Reset()
+	}
+	return action
 }
 
 // OnTick is the cluster serverCron, replacing the old 100ms ticker goroutine. gnet
@@ -161,47 +174,6 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 	case "flushall":
 		kv.FlushAll()
 		rconn.WriteOK()
-	case "save":
-		if len(args) != 0 {
-			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SAVE' command"))
-			return
-		}
-		if err := kv.SaveRDB(); err != nil {
-			rconn.WriteError(err)
-			return
-		}
-		rconn.WriteOK()
-	case "bgsave":
-		if len(args) != 0 {
-			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGSAVE' command"))
-			return
-		}
-		if !kv.PersistenceEnabled() {
-			rconn.WriteError(fmt.Errorf("persistence is not enabled"))
-			return
-		}
-		go func() {
-			if err := kv.SaveRDB(); err != nil {
-				utils.PrintError(err)
-			}
-		}()
-		rconn.WriteStatusString("Background saving started")
-	case "bgrewriteaof":
-		if len(args) != 0 {
-			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGREWRITEAOF' command"))
-			return
-		}
-		if !kv.PersistenceEnabled() {
-			rconn.WriteError(fmt.Errorf("persistence is not enabled"))
-			return
-		}
-		go func() {
-			if err := kv.RewriteAOF(); err != nil {
-				utils.PrintError(err)
-			}
-		}()
-		rconn.WriteStatusString("Background append only file rewriting started")
-
 	case "ping":
 		if clusterEnabled {
 			self := serverState.Self.Snapshot()
@@ -545,9 +517,9 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 			return
 		}
 
-		err := kv.Incr(key)
-		if err != nil {
+		if err := kv.Incr(key); err != nil {
 			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			return
 		}
 
 		rconn.WriteOK()
@@ -565,9 +537,9 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 			return
 		}
 
-		err := kv.IncrBy(key, incrByVal)
-		if err != nil {
+		if err := kv.IncrBy(key, incrByVal); err != nil {
 			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			return
 		}
 
 		rconn.WriteOK()
@@ -584,10 +556,9 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 			return
 		}
 
-		err := kv.Decr(key)
-
-		if err != nil {
+		if err := kv.Decr(key); err != nil {
 			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			return
 		}
 
 		rconn.WriteOK()
@@ -606,9 +577,9 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 
 		decrByVal := string(args[1])
 
-		err := kv.DecrBy(key, decrByVal)
-		if err != nil {
+		if err := kv.DecrBy(key, decrByVal); err != nil {
 			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+			return
 		}
 
 		rconn.WriteOK()
@@ -618,18 +589,14 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 			return
 		}
 
-		firstKey := string(args[0])
-
 		if clusterEnabled {
-			firstSlot := kvstore.SlotForKey(firstKey)
+			// Slot checks don't retain keys, so compare with zero-copy strings.
+			firstSlot := kvstore.SlotForKey(bstring(args[0]))
 
 			validQuery := true
 
 			for i := 2; i < len(args); i += 2 {
-				key := string(args[i])
-				slot := kvstore.SlotForKey(key)
-
-				if slot != firstSlot {
+				if kvstore.SlotForKey(bstring(args[i])) != firstSlot {
 					rconn.WriteError(
 						fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
 					)
@@ -644,18 +611,17 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 
 			// Since every key hashes to the same slot,
 			// checking the first key is sufficient.
-			if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
+			if toMoveorNotToMove(bstring(args[0]), rconn, kv) != "OK" {
 				return
 			}
 		}
 
-		keys := make([]string, len(args))
-		values := make([]string, len(args))
+		keys := make([]string, 0, len(args)/2)
+		values := make([]string, 0, len(args)/2)
 
-		for i := 0; i < len(args); i += 2 {
-			key, val := string(args[i]), string(args[i+1])
-			keys = append(keys, key)
-			values = append(values, val)
+		for i := 0; i+1 < len(args); i += 2 {
+			keys = append(keys, string(args[i]))
+			values = append(values, string(args[i+1]))
 		}
 
 		kv.Mset(keys, values)
@@ -671,14 +637,10 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 		validQuery := true
 
 		if clusterEnabled {
-			firstKey := string(args[0])
-
-			firstSlot := kvstore.SlotForKey(firstKey)
+			firstSlot := kvstore.SlotForKey(bstring(args[0]))
 
 			for i := 1; i < len(args); i++ {
-				key := string(args[i])
-
-				if kvstore.SlotForKey(key) != firstSlot {
+				if kvstore.SlotForKey(bstring(args[i])) != firstSlot {
 					rconn.WriteError(
 						fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
 					)
@@ -691,19 +653,20 @@ func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
 				return
 			}
 
-			if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
+			if toMoveorNotToMove(bstring(args[0]), rconn, kv) != "OK" {
 				return
 			}
 		}
 
-		var resp []string
-
+		// A missing key is a null element, not the literal "(nil)" string.
+		rconn.WriteArrayHeader(len(args))
 		for i := 0; i < len(args); i++ {
-			key := string(args[i])
-			resp = append(resp, kv.Get(key))
+			if val, ok := kv.GetString(bstring(args[i])); ok {
+				rconn.WriteString(val)
+			} else {
+				rconn.WriteNullString()
+			}
 		}
-
-		rconn.WriteArrayString(resp)
 	case "publish":
 		if len(args) != 2 {
 			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'PUBLISH' command"))
@@ -1011,23 +974,7 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 		}()
 	}
 
-	dataDir := os.Getenv("EMBERDB_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "."
-	}
-	kv, err := kvstore.OpenPersistent(
-		filepath.Join(dataDir, "emberdb-"+strings.TrimPrefix(port, ":")),
-		clusterEnabled,
-	)
-	if err != nil {
-		utils.PrintError(fmt.Errorf("%w: load persistence: %v", utils.ErrStartup, err))
-		return
-	}
-	defer func() {
-		if err := kv.Close(); err != nil {
-			utils.PrintError(fmt.Errorf("%w: close persistence: %v", utils.ErrStartup, err))
-		}
-	}()
+	kv := kvstore.NewKVStore(clusterEnabled)
 
 	if clusterEnabled {
 		serverState = &clusters.ClusterState{
