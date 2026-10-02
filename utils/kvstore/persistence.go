@@ -60,7 +60,5 @@ func (kv *KVStore) RewriteAOF() error {
 }
 
 func (kv *KVStore) rewriteSnapshot(write func([][]string) error) error {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	return write(snapshotCommands(kv.snapshotLocked()))
 }

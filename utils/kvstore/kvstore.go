@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lobaro/crc16"
@@ -44,7 +43,6 @@ type KVStore struct {
 	Sets              map[string]map[string]struct{}
 	SortedSets        map[string][]SortedSetMember
 	Expirations       map[string]time.Time
-	mu                sync.RWMutex
 	CommandsProcessed int
 	SlotKeys          [16384]map[string]Value
 	clusterEnabled    bool
@@ -90,8 +88,6 @@ func (kv *KVStore) setValue(key string, value Value) {
 }
 
 func (kv *KVStore) Set(key, value string) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	if kv.persist("SET", key, value) != nil {
 		return
 	}
@@ -102,11 +98,7 @@ func (kv *KVStore) Set(key, value string) {
 	kv.Strings[key] = value
 }
 
-
 func (kv *KVStore) Mset(keys, values []string) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	
 	// TODO: add persistence for MSET
 
 	for i, key := range keys {
@@ -120,8 +112,6 @@ func (kv *KVStore) Mset(keys, values []string) {
 }
 
 func (kv *KVStore) Get(key string) string {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	if kv.clusterEnabled {
 		if value, ok := kv.value(key, StringType); ok {
 			return value.String
@@ -135,8 +125,6 @@ func (kv *KVStore) Get(key string) string {
 }
 
 func (kv *KVStore) Delete(key string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	if kv.clusterEnabled {
 		slot := SlotForKey(key)
 		if _, ok := kv.SlotKeys[slot][key]; !ok {
@@ -178,8 +166,6 @@ func (kv *KVStore) Delete(key string) int {
 }
 
 func (kv *KVStore) Append(key, suffix string) error {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, StringType)
 		if err := kv.persist("SET", key, value.String+suffix); err != nil {
@@ -228,8 +214,6 @@ func (kv *KVStore) changeInteger(key string, delta int) error {
 }
 
 func (kv *KVStore) Incr(key string) error {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	return kv.changeInteger(key, 1)
 }
 
@@ -238,14 +222,10 @@ func (kv *KVStore) IncrBy(key, increment string) error {
 	if err != nil {
 		return fmt.Errorf("ERR INCRBY val is not an integer")
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	return kv.changeInteger(key, delta)
 }
 
 func (kv *KVStore) Decr(key string) error {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	return kv.changeInteger(key, -1)
 }
 
@@ -254,14 +234,10 @@ func (kv *KVStore) DecrBy(key, decrement string) error {
 	if err != nil {
 		return fmt.Errorf("ERR DECRBY val is not an integer")
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	return kv.changeInteger(key, -delta)
 }
 
 func (kv *KVStore) LPush(key string, values ...string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var list []string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, ListType)
@@ -284,8 +260,6 @@ func (kv *KVStore) LPush(key string, values ...string) int {
 }
 
 func (kv *KVStore) LPop(key string) (string, bool) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var list []string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, ListType)
@@ -310,8 +284,6 @@ func (kv *KVStore) LPop(key string) (string, bool) {
 }
 
 func (kv *KVStore) RPush(key string, values ...string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var list []string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, ListType)
@@ -332,8 +304,6 @@ func (kv *KVStore) RPush(key string, values ...string) int {
 }
 
 func (kv *KVStore) RPop(key string) (string, bool) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var list []string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, ListType)
@@ -359,8 +329,6 @@ func (kv *KVStore) RPop(key string) (string, bool) {
 }
 
 func (kv *KVStore) LRange(key string, start, end int) []string {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	var list []string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, ListType)
@@ -395,8 +363,6 @@ func (kv *KVStore) HSet(key, field, value string) {
 }
 
 func (kv *KVStore) HMSet(key string, fields map[string]string) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var hash map[string]string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, HashType)
@@ -428,8 +394,6 @@ func (kv *KVStore) HMSet(key string, fields map[string]string) {
 }
 
 func (kv *KVStore) HGet(key, field string) (string, bool) {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	if kv.clusterEnabled {
 		value, ok := kv.value(key, HashType)
 		if !ok {
@@ -443,8 +407,6 @@ func (kv *KVStore) HGet(key, field string) (string, bool) {
 }
 
 func (kv *KVStore) HMGet(key string, fields ...string) []any {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	var hash map[string]string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, HashType)
@@ -462,8 +424,6 @@ func (kv *KVStore) HMGet(key string, fields ...string) []any {
 }
 
 func (kv *KVStore) HGetAll(key string) []string {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	var hash map[string]string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, HashType)
@@ -484,8 +444,6 @@ func (kv *KVStore) HGetAll(key string) []string {
 }
 
 func (kv *KVStore) HDel(key string, fields ...string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var hash map[string]string
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, HashType)
@@ -513,8 +471,6 @@ func (kv *KVStore) HDel(key string, fields ...string) int {
 }
 
 func (kv *KVStore) SAdd(key string, members ...string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var set map[string]struct{}
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, SetType)
@@ -550,8 +506,6 @@ func (kv *KVStore) SAdd(key string, members ...string) int {
 }
 
 func (kv *KVStore) SMembers(key string) []string {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	var set map[string]struct{}
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, SetType)
@@ -568,8 +522,6 @@ func (kv *KVStore) SMembers(key string) []string {
 }
 
 func (kv *KVStore) SIsMember(key, member string) bool {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	if kv.clusterEnabled {
 		value, ok := kv.value(key, SetType)
 		if !ok {
@@ -583,8 +535,6 @@ func (kv *KVStore) SIsMember(key, member string) bool {
 }
 
 func (kv *KVStore) SRem(key string, members ...string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var set map[string]struct{}
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, SetType)
@@ -623,8 +573,6 @@ func (kv *KVStore) ZAdd(key string, pairs ...string) (int, error) {
 		}
 		scores[i/2] = score
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var sortedSet []SortedSetMember
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, SortedSetType)
@@ -661,8 +609,6 @@ func (kv *KVStore) ZAdd(key string, pairs ...string) (int, error) {
 }
 
 func (kv *KVStore) ZRange(key string, start, end int) []string {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	var sortedSet []SortedSetMember
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, SortedSetType)
@@ -693,8 +639,6 @@ func (kv *KVStore) ZRange(key string, start, end int) []string {
 }
 
 func (kv *KVStore) ZRem(key string, members ...string) int {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	var sortedSet []SortedSetMember
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, SortedSetType)
@@ -733,8 +677,6 @@ func (kv *KVStore) ZRem(key string, members ...string) int {
 }
 
 func (kv *KVStore) FlushAll() {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	if kv.persist("FLUSHALL") != nil {
 		return
 	}
@@ -754,8 +696,6 @@ func (kv *KVStore) GetKeysInSlot(slot uint64, count int) []string {
 	if slot >= uint64(len(kv.SlotKeys)) || count <= 0 {
 		return []string{}
 	}
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	keys := make([]string, 0, count)
 	for key := range kv.SlotKeys[slot] {
 		keys = append(keys, key)

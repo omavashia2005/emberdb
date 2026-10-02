@@ -110,8 +110,6 @@ func (kv *KVStore) applyAOF(args []string) error {
 }
 
 func (kv *KVStore) snapshot() rdbSnapshot {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	return kv.snapshotLocked()
 }
 
@@ -175,8 +173,6 @@ func (kv *KVStore) restore(s rdbSnapshot) {
 }
 
 func (kv *KVStore) keyCount() int {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
 	count := len(kv.Strings) + len(kv.Lists) + len(kv.Hashes) + len(kv.Sets) + len(kv.SortedSets)
 	for _, values := range kv.SlotKeys {
 		count += len(values)
