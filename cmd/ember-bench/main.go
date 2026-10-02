@@ -1,5 +1,5 @@
 // Command ember-bench compares EmberDB against Redis using one Go RESP
-// client against standalone and 3-node cluster deployments of each. It
+// client against 3-node cluster deployments of each. It
 // covers GET/SET/MGET/MSET across fixed concurrency levels and a
 // deterministic keyspace, using CLUSTER SLOTS for cluster-aware routing.
 package main
@@ -36,20 +36,18 @@ const (
 	missGroupCount = missRangeSize / keysPerGroup
 	missGroupStart = hitGroupCount
 
-	requestsDefault = 2000
+	requestsDefault = 20_000
 	warmupDefault   = 200
 	repeats         = 5
 	maxConcurrency  = 100
 )
 
 var concurrencies = []int{1, 10, 50, 100}
+var requestTimeout = 10 * time.Second
 
 func main() {
-	emberStandalone := flag.String("ember-standalone", "ember-standalone:6379", "EmberDB standalone address")
-	redisStandalone := flag.String("redis-standalone", "redis-standalone:6379", "Redis standalone address")
 	emberCluster := flag.String("ember-cluster", "ember-1:6379,ember-2:6379,ember-3:6379", "EmberDB cluster seed addresses")
 	redisCluster := flag.String("redis-cluster", "redis-1:6379,redis-2:6379,redis-3:6379", "Redis cluster seed addresses")
-	mode := flag.String("mode", "all", "all, standalone, or cluster")
 	requests := flag.Int("requests", requestsDefault, "measured requests per repeat")
 	warmup := flag.Int("warmup", warmupDefault, "warmup requests before each measured set")
 	out := flag.String("out", "benchmark-results/results.json", "raw results JSON path")
@@ -73,18 +71,10 @@ func main() {
 	var traces []traceEntry
 	var profileBatches []profileBatch
 
-	if *mode == "all" || *mode == "standalone" {
-		fmt.Println("=== STANDALONE ===")
-		report.Standalone = append(report.Standalone, runProduct("EmberDB", "standalone", []string{*emberStandalone}, *requests, *warmup, *traceDir, &traces, &profileBatches)...)
-		report.Standalone = append(report.Standalone, runProduct("Redis", "standalone", []string{*redisStandalone}, *requests, *warmup, *traceDir, &traces, &profileBatches)...)
-		printTable(report.Standalone)
-	}
-	if *mode == "all" || *mode == "cluster" {
-		fmt.Println("=== 3-NODE CLUSTER ===")
-		report.Cluster = append(report.Cluster, runProduct("EmberDB", "cluster", split(*emberCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
-		report.Cluster = append(report.Cluster, runProduct("Redis", "cluster", split(*redisCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
-		printTable(report.Cluster)
-	}
+	fmt.Println("=== 3-NODE CLUSTER ===")
+	report.Cluster = append(report.Cluster, runProduct("EmberDB", "cluster", split(*emberCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
+	report.Cluster = append(report.Cluster, runProduct("Redis", "cluster", split(*redisCluster), *requests, *warmup, *traceDir, &traces, &profileBatches)...)
+	printTable(report.Cluster)
 
 	if err := writeReport(*out, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -234,8 +224,12 @@ func newWorkers(n int) []*worker {
 // as a proper RESP3 null instead of Redis's legacy RESP2 "$-1" bulk string,
 // which this client's reader does not accept.
 func dial(addr string) (*peer, error) {
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, requestTimeout)
 	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
+		conn.Close()
 		return nil, err
 	}
 	p := &peer{conn: conn, writer: resp3.NewWriter(conn), reader: resp3.NewReader(conn)}
@@ -259,6 +253,9 @@ func (w *worker) do(addr string, args []string) error {
 			return err
 		}
 		w.conns[addr] = p
+	}
+	if err := p.conn.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
+		return err
 	}
 	if err := p.writer.WriteCommand(args...); err != nil {
 		return err
@@ -384,7 +381,7 @@ func runPhase(count int, workers []*worker, gen reqGen) ([]time.Duration, time.D
 				addr, args := gen(s)
 				t0 := time.Now()
 				if err := workers[i].do(addr, args); err != nil {
-					errs <- err
+					errs <- fmt.Errorf("%s %q via %s: %w", args[0], args[1], addr, err)
 					break
 				}
 				local = append(local, time.Since(t0))
@@ -599,16 +596,10 @@ var writeVariants = []struct {
 }
 
 func runProduct(product, mode string, addrs []string, requests, warmup int, traceDir string, traces *[]traceEntry, batches *[]profileBatch) []testResult {
-	var r *router
-	var err error
-	if mode == "standalone" {
-		r = newStandaloneRouter(addrs[0])
-	} else {
-		r, err = discoverClusterRouter(addrs)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+	r, err := discoverClusterRouter(addrs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	workers := newWorkers(maxConcurrency)
@@ -691,6 +682,10 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 		path  string
 	}
 	pending := make([]pendingTrace, len(r.addrs))
+	tracePath := "/debug/pprof/trace"
+	if r.product == "Redis" {
+		tracePath = "/debug/profile"
+	}
 	for i, addr := range r.addrs {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -708,16 +703,18 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 		}
 		pending[i] = pendingTrace{
 			entry: traceEntry{Product: r.product, Mode: r.mode, Command: command, Variant: variant, Concurrency: concurrency, Node: node, File: filepath.ToSlash(rel)},
-			url:   (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, "6060"), Path: "/debug/pprof/trace", RawQuery: "seconds=5"}).String(),
+			url:   (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, "6060"), Path: tracePath, RawQuery: "seconds=5"}).String(),
 			path:  path,
 		}
 	}
 	before := make([]doublebuffer.WriteStats, len(pending))
-	for i, p := range pending {
-		var err error
-		before[i], err = fetchWriteStats(strings.Replace(p.url, "/debug/pprof/trace?seconds=5", "/debug/resp-writes", 1))
-		if err != nil {
-			return fmt.Errorf("%s write counters before trace: %w", p.entry.Node, err)
+	if r.product == "EmberDB" {
+		for i, p := range pending {
+			var err error
+			before[i], err = fetchWriteStats(strings.Replace(p.url, "/debug/pprof/trace?seconds=5", "/debug/resp-writes", 1))
+			if err != nil {
+				return fmt.Errorf("%s write counters before trace: %w", p.entry.Node, err)
+			}
 		}
 	}
 
@@ -746,12 +743,14 @@ func (r *traceRecorder) capture(command, variant string, concurrency, requests i
 		return firstErr
 	}
 	for i, p := range pending {
-		after, err := fetchWriteStats(strings.Replace(p.url, "/debug/pprof/trace?seconds=5", "/debug/resp-writes", 1))
-		if err != nil {
-			return fmt.Errorf("%s write counters after trace: %w", p.entry.Node, err)
+		if r.product == "EmberDB" {
+			after, err := fetchWriteStats(strings.Replace(p.url, "/debug/pprof/trace?seconds=5", "/debug/resp-writes", 1))
+			if err != nil {
+				return fmt.Errorf("%s write counters after trace: %w", p.entry.Node, err)
+			}
+			delta := subtractWriteStats(after, before[i])
+			p.entry.WriteMetrics = &delta
 		}
-		delta := subtractWriteStats(after, before[i])
-		p.entry.WriteMetrics = &delta
 		*r.entries = append(*r.entries, p.entry)
 	}
 	return nil

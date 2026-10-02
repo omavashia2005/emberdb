@@ -2,13 +2,19 @@
 set -eu
 
 mode=${1:-}
-submode=${2:-all}
 case "$mode" in
   bench) ;;
   test) ;;
-  *) echo "usage: $0 bench [standalone|cluster] | test" >&2; exit 2 ;;
+  *) echo "usage: $0 bench | test" >&2; exit 2 ;;
 esac
-case "$submode" in all|standalone|cluster) ;; *) echo "submode must be standalone, cluster, or all" >&2; exit 2 ;; esac
+[ "$#" -eq 1 ] || { echo "usage: $0 bench | test" >&2; exit 2; }
+
+if [ "${EMBERDB_PERSISTENCE:-1}" = 0 ]; then
+  REDIS_APPENDONLY=no
+else
+  REDIS_APPENDONLY=yes
+fi
+export REDIS_APPENDONLY
 
 compose="docker compose -p emberdb-bench -f compose.benchmark.yaml"
 if [ "$mode" = bench ] && [ -n "${TRACE_DIR:-}" ]; then
@@ -33,11 +39,9 @@ wait_for() {
   done
 }
 
-wait_for ember-standalone
 wait_for ember-1
 wait_for ember-2
 wait_for ember-3
-wait_for redis-standalone
 wait_for redis-1
 wait_for redis-2
 wait_for redis-3
@@ -58,8 +62,8 @@ case "$mode" in
   bench)
     results=${RESULTS_DIR:-benchmark-results}
     mkdir -p "$results"
-    $compose run --rm bench-runner go run ./cmd/ember-bench -mode "$submode" -out "$results/results.json" \
-      -requests "${REQUESTS:-2000}" -warmup "${WARMUP:-200}" -trace-dir "${TRACE_DIR:-}"
+    $compose run --rm bench-runner go run ./cmd/ember-bench -out "$results/results.json" \
+      -requests "${REQUESTS:-20000}" -warmup "${WARMUP:-200}" -trace-dir "${TRACE_DIR:-}"
 
     cleanup
     cp scripts/bench-dashboard.html "$results/index.html"

@@ -1,13 +1,10 @@
-.PHONY: bench bench-standalone bench-cluster test-cluster
+.PHONY: bench bench-cluster test-cluster
 
 bench:
 	./scripts/docker-clusters.sh bench
 
-bench-standalone:
-	./scripts/docker-clusters.sh bench standalone
-
 bench-cluster:
-	./scripts/docker-clusters.sh bench cluster
+	./scripts/docker-clusters.sh bench
 
 test-cluster:
 	./scripts/docker-clusters.sh test

@@ -1,46 +1,35 @@
 services:
-  ember-standalone:
-    build: .
-    command: ["__standalone", "6379"]
-    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}"]
-    ports: ["127.0.0.1::6379", "127.0.0.1:6060:6060"]
-
   ember-1:
     build: .
     command: ["__node", "6379", "ember-1"]
-    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}"]
+    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}", "EMBERDB_DISABLE_AUTO_PERSISTENCE_MAINTENANCE=1", "EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports: ["127.0.0.1::6379", "127.0.0.1:6061:6060"]
 
   ember-2:
     build: .
     command: ["__node", "6379", "ember-2"]
-    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}"]
+    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}", "EMBERDB_DISABLE_AUTO_PERSISTENCE_MAINTENANCE=1", "EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports: ["127.0.0.1::6379", "127.0.0.1:6062:6060"]
 
   ember-3:
     build: .
     command: ["__node", "6379", "ember-3"]
-    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}"]
+    environment: ["EMBERDB_PPROF_ADDR=:6060", "EMBERDB_RESP_WRITE_PROFILE=${EMBERDB_RESP_WRITE_PROFILE:-0}", "EMBERDB_DISABLE_AUTO_PERSISTENCE_MAINTENANCE=1", "EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports: ["127.0.0.1::6379", "127.0.0.1:6063:6060"]
-
-  redis-standalone:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
-    ports: ["127.0.0.1::6379"]
 
   redis-1:
     image: redis:7-alpine
-    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes", "--appendfsync", "everysec"]
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "${REDIS_APPENDONLY:-yes}", "--appendfsync", "everysec", "--auto-aof-rewrite-percentage", "0", "--save", ""]
     ports: ["127.0.0.1::6379"]
 
   redis-2:
     image: redis:7-alpine
-    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes", "--appendfsync", "everysec"]
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "${REDIS_APPENDONLY:-yes}", "--appendfsync", "everysec", "--auto-aof-rewrite-percentage", "0", "--save", ""]
     ports: ["127.0.0.1::6379"]
 
   redis-3:
     image: redis:7-alpine
-    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "yes", "--appendfsync", "everysec"]
+    command: ["redis-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--appendonly", "${REDIS_APPENDONLY:-yes}", "--appendfsync", "everysec", "--auto-aof-rewrite-percentage", "0", "--save", ""]
     ports: ["127.0.0.1::6379"]
 
   benchmark-client:

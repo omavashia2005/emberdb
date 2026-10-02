@@ -5,16 +5,17 @@ Redis source is pinned to commit `20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e`.
 ## Run the comparison
 
 ```sh
-make bench             # standalone + cluster
-make bench-standalone  # standalone only
-make bench-cluster     # cluster only
+make bench             # EmberDB and Redis clusters
+make bench-cluster     # same cluster benchmark
 ```
 
-Each command builds Docker environments for standalone EmberDB, standalone Redis, and a 3-node cluster of each, runs the harness (`cmd/ember-bench`) inside a container on the same Docker network, writes raw results to `benchmark-results/results.json`, then serves a browser dashboard over the results at `http://127.0.0.1:8080/` (set `DASHBOARD_PORT` to change the port). Press Ctrl+C to stop the dashboard once done; the Docker environment is already torn down by then.
+Each command builds 3-node EmberDB and Redis clusters, runs the harness (`cmd/ember-bench`) inside a container on the same Docker network, writes raw results to `benchmark-results/results.json`, then serves a browser dashboard over the results at `http://127.0.0.1:8080/` (set `DASHBOARD_PORT` to change the port). Press Ctrl+C to stop the dashboard once done; the Docker environment is already torn down by then.
 
 Run `./scripts/profile-bench.sh` to capture one 5-second `.trace` per product, case, and node. The files appear under `benchmark-results/profiled/traces/emberdb/` and `benchmark-results/profiled/traces/redis/`, and the dashboard's Profiling tab links to both. EmberDB files are Go runtime traces, opened with `go tool trace`. Redis files are sampled server CPU profiles, opened with the pprof web viewer to inspect hot functions, call graphs, and flame graphs. Redis cannot emit Go runtime traces, so its profile does not include goroutine or garbage-collector timelines.
 
-The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons.
+Each measured case runs 5 repeats of 20,000 requests (100,000 measured requests per case). Set `REQUESTS` to change the per-repeat count for `make bench` or `./scripts/profile-bench.sh`, for example `REQUESTS=10000 make bench`. Profiling sends additional requests during each 5-second capture.
+
+The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons. Both benchmark clusters keep AOF appends and once-per-second fsync enabled by default, while automatic snapshots and AOF rewrites are disabled so full-dataset maintenance cannot pause measured commands. Set `EMBERDB_PERSISTENCE=0` before `make bench`, `make test-cluster`, or `./scripts/profile-bench.sh` to disable data persistence in both EmberDB and Redis. Redis still writes its required cluster topology file. Manual EmberDB persistence commands return an error when disabled.
 
 ## What it measures
 

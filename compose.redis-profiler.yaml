@@ -1,11 +1,4 @@
 services:
-  redis-standalone:
-    image: emberdb-redis-profiler:local
-    build:
-      context: .
-      dockerfile: Dockerfile.redis-profiler
-    ports: ["127.0.0.1::6060"]
-
   redis-1:
     image: emberdb-redis-profiler:local
     build:

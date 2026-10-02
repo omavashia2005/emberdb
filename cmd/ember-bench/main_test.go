@@ -1,13 +1,33 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bytechan/resp3"
 )
+
+func TestWorkerTimesOutWithoutReply(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go io.Copy(io.Discard, server)
+	before := requestTimeout
+	requestTimeout = 20 * time.Millisecond
+	defer func() { requestTimeout = before }()
+	w := &worker{conns: map[string]*peer{"pipe": {conn: client, writer: resp3.NewWriter(client), reader: resp3.NewReader(client)}}}
+	if err := w.do("pipe", []string{"GET", "missing"}); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("missing reply returned %v, want deadline exceeded", err)
+	}
+}
 
 func TestRouterFromSlots(t *testing.T) {
 	ranges := []interface{}{
