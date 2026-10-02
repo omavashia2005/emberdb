@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/Fusl/go-resp/doublebuffer"
 	"github.com/Fusl/go-resp/static"
 	"github.com/Fusl/go-resp/types"
 	"io"
@@ -17,7 +16,7 @@ const WriterBufferSize = 131072
 
 type Server struct {
 	rd   *bufio.Reader
-	wr   *doublebuffer.DoubleBuffer
+	wr   io.Writer
 	rerr error
 	werr error
 
@@ -56,13 +55,26 @@ type ServerOptions struct {
 func NewServer(rw io.ReadWriter) *Server {
 	s := &Server{
 		rd:                 bufio.NewReaderSize(rw, ReaderBufferSize),
-		wr:                 doublebuffer.NewWriterSize(rw, WriterBufferSize),
+		wr:                 rw,
 		maxMultiBulkLength: MaxMultiBulkLength,
 		maxBulkLength:      MaxBulkLength,
 		maxBufferSize:      MaxMultiBulkLength * MaxBulkLength,
 		appendIntBuf:       make([]byte, 0, 20),
 	}
 	return s
+}
+
+// NewWriter returns a Server that only writes replies to wr. It allocates no read
+// buffer, for use with an external command parser (see ParseCommand) such as an
+// event loop that owns the socket's inbound bytes.
+func NewWriter(wr io.Writer) *Server {
+	return &Server{
+		wr:                 wr,
+		maxMultiBulkLength: MaxMultiBulkLength,
+		maxBulkLength:      MaxBulkLength,
+		maxBufferSize:      MaxMultiBulkLength * MaxBulkLength,
+		appendIntBuf:       make([]byte, 0, 20),
+	}
 }
 
 // ResetReader starts reading commands from the newly passed reader. Mostly used for testing purposes.
@@ -74,7 +86,7 @@ func (s *Server) ResetReader(r io.Reader) {
 // Reset starts reading and writing commands from the newly passed reader and writer. Mostly used for testing purposes.
 func (s *Server) Reset(rw io.ReadWriter) {
 	s.rd.Reset(rw)
-	s.wr.Reset(rw)
+	s.wr = rw
 	s.rerr = nil
 	s.werr = nil
 }
@@ -440,9 +452,12 @@ func (s *Server) next() ([][]byte, error) {
 	return argsRefs[:n], nil
 }
 
-// Close gracefully closes the incoming connection after flushing any pending writes.
+// Close closes the incoming connection if the underlying writer implements io.Closer.
 func (s *Server) Close() error {
-	return s.wr.Close()
+	if c, ok := s.wr.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // CloseWithError closes the incoming connection after writing an error response.
