@@ -1,56 +1,45 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
-	"net"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 
+	"github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
 	"github.com/omavashia2005/emberdb/utils/clusters"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
 )
 
+// commandServer drives dispatch directly: replies are written into a buffer by a
+// writer-only resp.Server, then decoded. This exercises the single-threaded command
+// path without a socket or event loop.
 type commandServer struct {
-	conn   net.Conn
-	reader *resp3.Reader
+	h   *emberHandler
+	cs  *connState
+	buf *bytes.Buffer
+}
+
+func newCommandServer(kv *kvstore.KVStore, clusterEnabled bool) *commandServer {
+	buf := &bytes.Buffer{}
+	return &commandServer{
+		h:   &emberHandler{kv: kv, clusterEnabled: clusterEnabled},
+		cs:  &connState{enc: resp.NewWriter(buf), subs: make(map[string]struct{})},
+		buf: buf,
+	}
 }
 
 func startClusterCommandServer(tb testing.TB, state *clusters.ClusterState) *commandServer {
 	tb.Helper()
 	serverState = state
-	clientConn, serverConn := net.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handleConnection(serverConn, kvstore.NewKVStore(), true)
-	}()
-	server := &commandServer{conn: clientConn, reader: resp3.NewReader(clientConn)}
-	tb.Cleanup(func() {
-		clientConn.Close()
-		<-done
-	})
-	return server
+	return newCommandServer(kvstore.NewKVStore(true), true)
 }
 
 func startCommandServer(tb testing.TB) *commandServer {
 	tb.Helper()
-	kv := kvstore.NewKVStore()
-	clientConn, serverConn := net.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handleConnection(serverConn, kv, false)
-	}()
-
-	server := &commandServer{conn: clientConn, reader: resp3.NewReader(clientConn)}
-	tb.Cleanup(func() {
-		clientConn.Close()
-		<-done
-	})
-	return server
+	return newCommandServer(kvstore.NewKVStore(), false)
 }
 
 func command(args ...string) []byte {
@@ -70,10 +59,13 @@ func command(args ...string) []byte {
 
 func (s *commandServer) run(tb testing.TB, payload []byte) any {
 	tb.Helper()
-	if _, err := s.conn.Write(payload); err != nil {
+	s.buf.Reset()
+	args, _, err := resp.ParseCommand(payload)
+	if err != nil {
 		tb.Fatal(err)
 	}
-	value, _, err := s.reader.ReadValue()
+	s.h.dispatch(s.cs, args)
+	value, _, err := resp3.NewReader(s.buf).ReadValue()
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -86,15 +78,15 @@ func TestDisabledPersistenceCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, server := net.Pipe()
-	go handleConnection(server, kv, false)
-	defer client.Close()
-	reader := resp3.NewReader(client)
+	server := newCommandServer(kv, false)
 	for _, name := range []string{"SAVE", "BGSAVE", "BGREWRITEAOF"} {
-		if _, err := client.Write(command(name)); err != nil {
+		server.buf.Reset()
+		args, _, err := resp.ParseCommand(command(name))
+		if err != nil {
 			t.Fatal(err)
 		}
-		value, _, err := reader.ReadValue()
+		server.h.dispatch(server.cs, args)
+		value, _, err := resp3.NewReader(server.buf).ReadValue()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -137,40 +129,10 @@ func TestMGetMissingKeyReturnsNull(t *testing.T) {
 	t.Skip(`known incompatibility: MGET encodes the internal "(nil)" sentinel as a string`)
 }
 
-func TestConcurrentConnections(t *testing.T) {
-	kv := kvstore.NewKVStore()
-	var clients, servers sync.WaitGroup
-	errs := make(chan error, 50)
-	for range 50 {
-		clientConn, serverConn := net.Pipe()
-		servers.Add(1)
-		go func() {
-			defer servers.Done()
-			handleConnection(serverConn, kv, false)
-		}()
-		clients.Add(1)
-		go func() {
-			defer clients.Done()
-			defer clientConn.Close()
-			if err := resp3.NewWriter(clientConn).WriteCommand("PING"); err != nil {
-				errs <- err
-				return
-			}
-			value, _, err := resp3.NewReader(clientConn).ReadValue()
-			if err != nil {
-				errs <- err
-				return
-			}
-			if value.SmartResult() != "PONG" {
-				errs <- fmt.Errorf("PING = %#v", value.SmartResult())
-			}
-		}()
-	}
-	clients.Wait()
-	servers.Wait()
-	close(errs)
-	for err := range errs {
-		t.Error(err)
+func TestPingPong(t *testing.T) {
+	server := startCommandServer(t)
+	if got := server.run(t, command("PING")); got != "PONG" {
+		t.Fatalf("PING = %#v, want PONG", got)
 	}
 }
 

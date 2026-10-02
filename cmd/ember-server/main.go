@@ -17,6 +17,8 @@ import (
 
 	"github.com/Fusl/go-resp"
 	"github.com/bytechan/resp3"
+	"github.com/panjf2000/gnet/v2"
+
 	"github.com/omavashia2005/emberdb/utils"
 	"github.com/omavashia2005/emberdb/utils/clusters"
 	"github.com/omavashia2005/emberdb/utils/kvstore"
@@ -81,896 +83,917 @@ func clusterSlots() []any {
 	return ranges
 }
 
-func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
-	defer conn.Close()
-	subscriptions := make(map[string][]chan string)
-	defer func() {
-		for channel, subscribers := range subscriptions {
-			for _, subscriber := range subscribers {
-				pubsub.Unsubscribe(channel, subscriber, ps)
-			}
+// connState is per-connection state attached to each gnet.Conn. The resp.Server
+// writes replies straight into the conn's gnet outbound buffer, which gnet flushes
+// once after OnTraffic returns (the beforeSleep-equivalent batched write).
+type connState struct {
+	c    gnet.Conn
+	enc  *resp.Server
+	subs map[string]struct{}
+}
+
+// emberHandler is the single-threaded event loop. All kvstore, serverState and
+// pubsub access happens inside these callbacks, so none of them need a mutex.
+type emberHandler struct {
+	gnet.BuiltinEventEngine
+	kv             *kvstore.KVStore
+	clusterEnabled bool
+	cronIter       int
+}
+
+func (h *emberHandler) OnOpen(c gnet.Conn) ([]byte, gnet.Action) {
+	c.SetContext(&connState{
+		c:    c,
+		enc:  resp.NewWriter(c),
+		subs: make(map[string]struct{}),
+	})
+	return nil, gnet.None
+}
+
+func (h *emberHandler) OnClose(c gnet.Conn, _ error) gnet.Action {
+	if cs, ok := c.Context().(*connState); ok {
+		for channel := range cs.subs {
+			pubsub.Unsubscribe(channel, c, ps)
 		}
-	}()
-
-	rconn := resp.NewServer(conn)
-	defer rconn.Close()
-
-	if err := rconn.SetOptions(resp.ServerOptions{
-		MaxMultiBulkLength: resp.Pointer(1024),
-		MaxBulkLength:      resp.Pointer(65536),
-		MaxBufferSize:      resp.Pointer(1048576),
-	}); err != nil {
-		rconn.CloseWithError(err)
 	}
+	return gnet.None
+}
 
+func (h *emberHandler) OnTraffic(c gnet.Conn) gnet.Action {
+	cs := c.Context().(*connState)
 	for {
-		args, err := rconn.Next()
+		buf, _ := c.Peek(-1)
+		if len(buf) == 0 {
+			break
+		}
+		args, consumed, err := resp.ParseCommand(buf)
+		if errors.Is(err, resp.ErrIncomplete) {
+			break
+		}
 		if err != nil {
-			rconn.CloseWithError(err)
-			log.Printf("closed connection from %s during read: %v", conn.RemoteAddr(), err)
+			cs.enc.WriteError(err)
+			return gnet.Close
+		}
+		h.dispatch(cs, args)
+		c.Discard(consumed)
+	}
+	return gnet.None
+}
+
+// OnTick is the cluster serverCron, replacing the old 100ms ticker goroutine. gnet
+// runs it on its own goroutine (not the event loop), so it only touches
+// serverState, which is RWMutex-guarded — never the lock-free kvstore.
+func (h *emberHandler) OnTick() (time.Duration, gnet.Action) {
+	clusters.ClusterCron(h.cronIter)
+	h.cronIter++
+	return 100 * time.Millisecond, gnet.None
+}
+
+func (h *emberHandler) dispatch(cs *connState, args [][]byte) {
+	kv := h.kv
+	clusterEnabled := h.clusterEnabled
+	rconn := cs.enc
+
+	cmd := bstring(BytesToLower(args[0]))
+	args = args[1:]
+
+	switch cmd {
+	case "flushall":
+		kv.FlushAll()
+		rconn.WriteOK()
+	case "save":
+		if len(args) != 0 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SAVE' command"))
+			return
+		}
+		if err := kv.SaveRDB(); err != nil {
+			rconn.WriteError(err)
+			return
+		}
+		rconn.WriteOK()
+	case "bgsave":
+		if len(args) != 0 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGSAVE' command"))
+			return
+		}
+		if !kv.PersistenceEnabled() {
+			rconn.WriteError(fmt.Errorf("persistence is not enabled"))
+			return
+		}
+		go func() {
+			if err := kv.SaveRDB(); err != nil {
+				utils.PrintError(err)
+			}
+		}()
+		rconn.WriteStatusString("Background saving started")
+	case "bgrewriteaof":
+		if len(args) != 0 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGREWRITEAOF' command"))
+			return
+		}
+		if !kv.PersistenceEnabled() {
+			rconn.WriteError(fmt.Errorf("persistence is not enabled"))
+			return
+		}
+		go func() {
+			if err := kv.RewriteAOF(); err != nil {
+				utils.PrintError(err)
+			}
+		}()
+		rconn.WriteStatusString("Background append only file rewriting started")
+
+	case "ping":
+		if clusterEnabled {
+			self := serverState.Self.Snapshot()
+			rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", self.Name))
+			rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", self.ClientPort))
+			rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", self.ClusterBusPort))
+		} else {
+			rconn.WriteStatusString("PONG")
+		}
+	case "echo":
+		if len(args) == 0 {
+			rconn.WriteError(fmt.Errorf("wrong number of arguments for 'ECHO' command"))
+			return
+		}
+		if len(args) == 1 {
+			rconn.WriteBytes(args[0])
+			return
+		}
+		rconn.WriteArrayBytes(args)
+	case "lpush", "rpush":
+		if len(args) < 2 {
+			rconn.WriteError(fmt.Errorf("ERR %s requires at least 2 arguments", strings.ToUpper(cmd)))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		values := make([]string, len(args)-1)
+		for i := range values {
+			values[i] = string(args[i+1])
+		}
+		if cmd == "lpush" {
+			rconn.WriteInt(kv.LPush(key, values...))
+		} else {
+			rconn.WriteInt(kv.RPush(key, values...))
+		}
+
+	case "lpop", "rpop":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR %s requires 1 argument", strings.ToUpper(cmd)))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		var value string
+		var ok bool
+		if cmd == "lpop" {
+			value, ok = kv.LPop(key)
+		} else {
+			value, ok = kv.RPop(key)
+		}
+		if !ok {
+			rconn.WriteNullString()
+		} else {
+			rconn.WriteString(value)
+		}
+
+	case "lrange":
+		if len(args) != 3 {
+			rconn.WriteError(fmt.Errorf("ERR LRANGE requires 3 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		start, err := strconv.Atoi(string(args[1]))
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR LRANGE start index must be an integer"))
+			return
+		}
+		end, err := strconv.Atoi(string(args[2]))
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR LRANGE end index must be an integer"))
+			return
+		}
+		rconn.WriteArrayString(kv.LRange(key, start, end))
+
+	case "llen":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR LLEN requires 1 argument"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		rconn.WriteInt(kv.LLen(key))
+
+	case "hset":
+		if len(args) != 3 {
+			rconn.WriteError(fmt.Errorf("ERR HSET requires 3 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		kv.HSet(key, string(args[1]), string(args[2]))
+		rconn.WriteOK()
+
+	case "hget":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("ERR HGET requires 2 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		value, ok := kv.HGet(key, string(args[1]))
+		if !ok {
+			rconn.WriteNullString()
+		} else {
+			rconn.WriteString(value)
+		}
+
+	case "hmset":
+		if len(args) < 3 || len(args)%2 == 0 {
+			rconn.WriteError(fmt.Errorf("ERR HMSET requires field/value pairs"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		fields := make(map[string]string, (len(args)-1)/2)
+		for i := 1; i < len(args); i += 2 {
+			fields[string(args[i])] = string(args[i+1])
+		}
+		kv.HMSet(key, fields)
+		rconn.WriteOK()
+
+	case "hmget":
+		if len(args) < 2 {
+			rconn.WriteError(fmt.Errorf("ERR HMGET requires at least 2 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		fields := make([]string, len(args)-1)
+		for i := range fields {
+			fields[i] = string(args[i+1])
+		}
+		rconn.WriteArray(kv.HMGet(key, fields...))
+
+	case "hgetall":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR HGETALL requires 1 argument"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		rconn.WriteArrayString(kv.HGetAll(key))
+
+	case "hdel":
+		if len(args) < 2 {
+			rconn.WriteError(fmt.Errorf("ERR HDEL requires at least 2 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		fields := make([]string, len(args)-1)
+		for i := range fields {
+			fields[i] = string(args[i+1])
+		}
+		rconn.WriteInt(kv.HDel(key, fields...))
+
+	case "sadd", "srem":
+		if len(args) < 2 {
+			rconn.WriteError(fmt.Errorf("ERR %s requires at least 2 arguments", strings.ToUpper(cmd)))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		members := make([]string, len(args)-1)
+		for i := range members {
+			members[i] = string(args[i+1])
+		}
+		if cmd == "sadd" {
+			rconn.WriteInt(kv.SAdd(key, members...))
+		} else {
+			rconn.WriteInt(kv.SRem(key, members...))
+		}
+
+	case "smembers":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR SMEMBERS requires 1 argument"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		rconn.WriteArrayString(kv.SMembers(key))
+
+	case "sismember":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("ERR SISMEMBER requires 2 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		if kv.SIsMember(key, string(args[1])) {
+			rconn.WriteInt(1)
+		} else {
+			rconn.WriteInt(0)
+		}
+
+	case "zadd":
+		if len(args) < 3 || len(args)%2 == 0 {
+			rconn.WriteError(fmt.Errorf("ERR ZADD requires score/member pairs"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		pairs := make([]string, len(args)-1)
+		for i := range pairs {
+			pairs[i] = string(args[i+1])
+		}
+		added, err := kv.ZAdd(key, pairs...)
+		if err != nil {
+			rconn.WriteError(err)
+			return
+		}
+		rconn.WriteInt(added)
+
+	case "zrange":
+		if len(args) != 3 {
+			rconn.WriteError(fmt.Errorf("ERR ZRANGE requires 3 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		start, err := strconv.Atoi(string(args[1]))
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR ZRANGE invalid start index"))
+			return
+		}
+		end, err := strconv.Atoi(string(args[2]))
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR ZRANGE invalid stop index"))
+			return
+		}
+		rconn.WriteArrayString(kv.ZRange(key, start, end))
+
+	case "zrem":
+		if len(args) < 2 {
+			rconn.WriteError(fmt.Errorf("ERR ZREM requires at least 2 arguments"))
+			return
+		}
+		key := string(args[0])
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+		members := make([]string, len(args)-1)
+		for i := range members {
+			members[i] = string(args[i+1])
+		}
+		rconn.WriteInt(kv.ZRem(key, members...))
+
+	case "set":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SET' command"))
 			return
 		}
 
-		cmd := bstring(BytesToLower(args[0]))
-		args = args[1:]
-
-		switch cmd {
-		case "flushall":
-			kv.FlushAll()
-			rconn.WriteOK()
-		case "save":
-			if len(args) != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SAVE' command"))
-				continue
-			}
-			if err := kv.SaveRDB(); err != nil {
-				rconn.WriteError(err)
-				continue
-			}
-			rconn.WriteOK()
-		case "bgsave":
-			if len(args) != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGSAVE' command"))
-				continue
-			}
-			if !kv.PersistenceEnabled() {
-				rconn.WriteError(fmt.Errorf("persistence is not enabled"))
-				continue
-			}
-			go func() {
-				if err := kv.SaveRDB(); err != nil {
-					utils.PrintError(err)
-				}
-			}()
-			rconn.WriteStatusString("Background saving started")
-		case "bgrewriteaof":
-			if len(args) != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGREWRITEAOF' command"))
-				continue
-			}
-			if !kv.PersistenceEnabled() {
-				rconn.WriteError(fmt.Errorf("persistence is not enabled"))
-				continue
-			}
-			go func() {
-				if err := kv.RewriteAOF(); err != nil {
-					utils.PrintError(err)
-				}
-			}()
-			rconn.WriteStatusString("Background append only file rewriting started")
-
-		case "ping":
-			if clusterEnabled {
-				self := serverState.Self.Snapshot()
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %s\n", self.Name))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", self.ClientPort))
-				rconn.WriteStatusString(fmt.Sprintf("PONG from %d\n", self.ClusterBusPort))
-			} else {
-				rconn.WriteStatusString("PONG")
-			}
-		case "echo":
-			if len(args) == 0 {
-				rconn.WriteError(fmt.Errorf("wrong number of arguments for 'ECHO' command"))
-				continue
-			}
-			if len(args) == 1 {
-				// Write a bulk string response
-				rconn.WriteBytes(args[0])
-				continue
-			}
-
-			rconn.WriteArrayBytes(args)
-		case "lpush", "rpush":
-			if len(args) < 2 {
-				rconn.WriteError(fmt.Errorf("ERR %s requires at least 2 arguments", strings.ToUpper(cmd)))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			values := make([]string, len(args)-1)
-			for i := range values {
-				values[i] = string(args[i+1])
-			}
-			if cmd == "lpush" {
-				rconn.WriteInt(kv.LPush(key, values...))
-			} else {
-				rconn.WriteInt(kv.RPush(key, values...))
-			}
-
-		case "lpop", "rpop":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR %s requires 1 argument", strings.ToUpper(cmd)))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			var value string
-			var ok bool
-			if cmd == "lpop" {
-				value, ok = kv.LPop(key)
-			} else {
-				value, ok = kv.RPop(key)
-			}
-			if !ok {
-				rconn.WriteNullString()
-			} else {
-				rconn.WriteString(value)
-			}
-
-		case "lrange":
-			if len(args) != 3 {
-				rconn.WriteError(fmt.Errorf("ERR LRANGE requires 3 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			start, err := strconv.Atoi(string(args[1]))
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR LRANGE start index must be an integer"))
-				continue
-			}
-			end, err := strconv.Atoi(string(args[2]))
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR LRANGE end index must be an integer"))
-				continue
-			}
-			rconn.WriteArrayString(kv.LRange(key, start, end))
-
-		case "llen":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR LLEN requires 1 argument"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			rconn.WriteInt(kv.LLen(key))
-
-		case "hset":
-			if len(args) != 3 {
-				rconn.WriteError(fmt.Errorf("ERR HSET requires 3 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			kv.HSet(key, string(args[1]), string(args[2]))
-			rconn.WriteOK()
-
-		case "hget":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("ERR HGET requires 2 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			value, ok := kv.HGet(key, string(args[1]))
-			if !ok {
-				rconn.WriteNullString()
-			} else {
-				rconn.WriteString(value)
-			}
-
-		case "hmset":
-			if len(args) < 3 || len(args)%2 == 0 {
-				rconn.WriteError(fmt.Errorf("ERR HMSET requires field/value pairs"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			fields := make(map[string]string, (len(args)-1)/2)
-			for i := 1; i < len(args); i += 2 {
-				fields[string(args[i])] = string(args[i+1])
-			}
-			kv.HMSet(key, fields)
-			rconn.WriteOK()
-
-		case "hmget":
-			if len(args) < 2 {
-				rconn.WriteError(fmt.Errorf("ERR HMGET requires at least 2 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			fields := make([]string, len(args)-1)
-			for i := range fields {
-				fields[i] = string(args[i+1])
-			}
-			rconn.WriteArray(kv.HMGet(key, fields...))
-
-		case "hgetall":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR HGETALL requires 1 argument"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			rconn.WriteArrayString(kv.HGetAll(key))
-
-		case "hdel":
-			if len(args) < 2 {
-				rconn.WriteError(fmt.Errorf("ERR HDEL requires at least 2 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			fields := make([]string, len(args)-1)
-			for i := range fields {
-				fields[i] = string(args[i+1])
-			}
-			rconn.WriteInt(kv.HDel(key, fields...))
-
-		case "sadd", "srem":
-			if len(args) < 2 {
-				rconn.WriteError(fmt.Errorf("ERR %s requires at least 2 arguments", strings.ToUpper(cmd)))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			members := make([]string, len(args)-1)
-			for i := range members {
-				members[i] = string(args[i+1])
-			}
-			if cmd == "sadd" {
-				rconn.WriteInt(kv.SAdd(key, members...))
-			} else {
-				rconn.WriteInt(kv.SRem(key, members...))
-			}
-
-		case "smembers":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR SMEMBERS requires 1 argument"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			rconn.WriteArrayString(kv.SMembers(key))
-
-		case "sismember":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("ERR SISMEMBER requires 2 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			if kv.SIsMember(key, string(args[1])) {
-				rconn.WriteInt(1)
-			} else {
-				rconn.WriteInt(0)
-			}
-
-		case "zadd":
-			if len(args) < 3 || len(args)%2 == 0 {
-				rconn.WriteError(fmt.Errorf("ERR ZADD requires score/member pairs"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			pairs := make([]string, len(args)-1)
-			for i := range pairs {
-				pairs[i] = string(args[i+1])
-			}
-			added, err := kv.ZAdd(key, pairs...)
-			if err != nil {
-				rconn.WriteError(err)
-				continue
-			}
-			rconn.WriteInt(added)
-
-		case "zrange":
-			if len(args) != 3 {
-				rconn.WriteError(fmt.Errorf("ERR ZRANGE requires 3 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			start, err := strconv.Atoi(string(args[1]))
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR ZRANGE invalid start index"))
-				continue
-			}
-			end, err := strconv.Atoi(string(args[2]))
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR ZRANGE invalid stop index"))
-				continue
-			}
-			rconn.WriteArrayString(kv.ZRange(key, start, end))
-
-		case "zrem":
-			if len(args) < 2 {
-				rconn.WriteError(fmt.Errorf("ERR ZREM requires at least 2 arguments"))
-				continue
-			}
-			key := string(args[0])
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-			members := make([]string, len(args)-1)
-			for i := range members {
-				members[i] = string(args[i+1])
-			}
-			rconn.WriteInt(kv.ZRem(key, members...))
-
-		case "set":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SET' command"))
-				continue
-			}
-
-			key := string(args[0])
-			val := string(args[1])
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			kv.Set(key, val)
-			rconn.WriteOK()
-
-		case "get":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'GET' command"))
-				continue
-			}
-
-			key := string(args[0])
-			val := kv.Get(key)
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			if val == "(nil)" {
-				rconn.WriteStatusString("No such key")
-				continue
-			}
-
-			rconn.WriteString(val)
-
-		case "append":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'APPEND' command"))
-				continue
-			}
-
-			key := string(args[0])
-			valueToAppend := string(args[1])
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			kv.Append(key, valueToAppend)
-
-			rconn.WriteOK()
-
-		case "incr":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'INCR' command"))
-				continue
-			}
-
-			key := string(args[0])
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			err := kv.Incr(key)
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
-			}
-
-			rconn.WriteOK()
-
-		case "incrby":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'INCRBY' command"))
-				continue
-			}
-
-			key := string(args[0])
-			incrByVal := string(args[1])
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			err := kv.IncrBy(key, incrByVal)
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
-			}
-
-			rconn.WriteOK()
-
-		case "decr":
-			if len(args) != 1 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'DECR' command"))
-				continue
-			}
-
-			key := string(args[0])
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			err := kv.Decr(key)
-
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
-			}
-
-			rconn.WriteOK()
-
-		case "decrby":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'DECRBY' command"))
-				continue
-			}
-
-			key := string(args[0])
-
-			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
-				continue
-			}
-
-			decrByVal := string(args[1])
-
-			err := kv.DecrBy(key, decrByVal)
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
-			}
-
-			rconn.WriteOK()
-		case "mset":
-			if len(args) == 0 || len(args)%2 != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'MSET' command"))
-				continue
-			}
-
-			firstKey := string(args[0])
-
-			if clusterEnabled {
-				firstSlot := kvstore.SlotForKey(firstKey)
-
-				validQuery := true
-
-				for i := 2; i < len(args); i += 2 {
-					key := string(args[i])
-					slot := kvstore.SlotForKey(key)
-
-					if slot != firstSlot {
-						rconn.WriteError(
-							fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
-						)
-						validQuery = false
-						break
-					}
-				}
-
-				if !validQuery {
-					continue
-				}
-
-				// Since every key hashes to the same slot,
-				// checking the first key is sufficient.
-				if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
-					continue
-				}
-			}
-
-			keys := make([]string, len(args))
-			values := make([]string, len(args))
-
-			for i := 0; i < len(args); i += 2 {
-				key, val := string(args[i]), string(args[i+1])
-				keys = append(keys, key)
-				values = append(values, val)
-			}
-
-			kv.Mset(keys, values)
-
-			rconn.WriteOK()
-
-		case "mget":
-			if len(args) == 0 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MGET' command"))
-				continue
-			}
+		key := string(args[0])
+		val := string(args[1])
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		kv.Set(key, val)
+		rconn.WriteOK()
+
+	case "get":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'GET' command"))
+			return
+		}
+
+		key := string(args[0])
+		val := kv.Get(key)
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		if val == "(nil)" {
+			rconn.WriteStatusString("No such key")
+			return
+		}
+
+		rconn.WriteString(val)
+
+	case "append":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'APPEND' command"))
+			return
+		}
+
+		key := string(args[0])
+		valueToAppend := string(args[1])
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		kv.Append(key, valueToAppend)
+
+		rconn.WriteOK()
+
+	case "incr":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'INCR' command"))
+			return
+		}
+
+		key := string(args[0])
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		err := kv.Incr(key)
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+		}
+
+		rconn.WriteOK()
+
+	case "incrby":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'INCRBY' command"))
+			return
+		}
+
+		key := string(args[0])
+		incrByVal := string(args[1])
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		err := kv.IncrBy(key, incrByVal)
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+		}
+
+		rconn.WriteOK()
+
+	case "decr":
+		if len(args) != 1 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'DECR' command"))
+			return
+		}
+
+		key := string(args[0])
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		err := kv.Decr(key)
+
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+		}
+
+		rconn.WriteOK()
+
+	case "decrby":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'DECRBY' command"))
+			return
+		}
+
+		key := string(args[0])
+
+		if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
+			return
+		}
+
+		decrByVal := string(args[1])
+
+		err := kv.DecrBy(key, decrByVal)
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("ERR value is not an integer"))
+		}
+
+		rconn.WriteOK()
+	case "mset":
+		if len(args) == 0 || len(args)%2 != 0 {
+			rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'MSET' command"))
+			return
+		}
+
+		firstKey := string(args[0])
+
+		if clusterEnabled {
+			firstSlot := kvstore.SlotForKey(firstKey)
 
 			validQuery := true
 
-			if clusterEnabled {
-				firstKey := string(args[0])
-
-				firstSlot := kvstore.SlotForKey(firstKey)
-
-				for i := 1; i < len(args); i++ {
-					key := string(args[i])
-
-					if kvstore.SlotForKey(key) != firstSlot {
-						rconn.WriteError(
-							fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
-						)
-						validQuery = false
-						break
-					}
-				}
-
-				if !validQuery {
-					continue
-				}
-
-				if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
-					continue
-				}
-			}
-
-			var resp []string
-
-			for i := 0; i < len(args); i++ {
+			for i := 2; i < len(args); i += 2 {
 				key := string(args[i])
-				resp = append(resp, kv.Get(key))
-			}
+				slot := kvstore.SlotForKey(key)
 
-			rconn.WriteArrayString(resp)
-		case "publish":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'PUBLISH' command"))
-				continue
-			}
-
-			channel, message := string(args[0]), string(args[1])
-			rconn.WriteInt(pubsub.Publish(channel, message, ps))
-
-		case "subscribe":
-			if len(args) < 1 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SUBSCRIBE' command"))
-				continue
-			}
-
-			for i := range args {
-
-				channel := string(args[i])
-				ch := pubsub.Subscribe(channel, ps)
-				subscriptions[channel] = append(subscriptions[channel], ch)
-
-				go func() {
-
-					for message := range ch {
-						fmt.Printf("Received message on channel %s: %s\n", channel, message)
-						rconn.WriteString(message)
-					}
-
-				}()
-
-				rconn.WriteOK()
-			}
-
-		case "unsubscribe":
-			channels := make([]string, len(args))
-			for i := range args {
-				channels[i] = string(args[i])
-			}
-			if len(channels) == 0 {
-				for channel := range subscriptions {
-					channels = append(channels, channel)
+				if slot != firstSlot {
+					rconn.WriteError(
+						fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
+					)
+					validQuery = false
+					break
 				}
 			}
-			for _, channel := range channels {
-				for _, subscriber := range subscriptions[channel] {
-					pubsub.Unsubscribe(channel, subscriber, ps)
-				}
-				delete(subscriptions, channel)
+
+			if !validQuery {
+				return
 			}
+
+			// Since every key hashes to the same slot,
+			// checking the first key is sufficient.
+			if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
+				return
+			}
+		}
+
+		keys := make([]string, len(args))
+		values := make([]string, len(args))
+
+		for i := 0; i < len(args); i += 2 {
+			key, val := string(args[i]), string(args[i+1])
+			keys = append(keys, key)
+			values = append(values, val)
+		}
+
+		kv.Mset(keys, values)
+
+		rconn.WriteOK()
+
+	case "mget":
+		if len(args) == 0 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MGET' command"))
+			return
+		}
+
+		validQuery := true
+
+		if clusterEnabled {
+			firstKey := string(args[0])
+
+			firstSlot := kvstore.SlotForKey(firstKey)
+
+			for i := 1; i < len(args); i++ {
+				key := string(args[i])
+
+				if kvstore.SlotForKey(key) != firstSlot {
+					rconn.WriteError(
+						fmt.Errorf("CROSSSLOT Keys in request don't hash to the same slot"),
+					)
+					validQuery = false
+					break
+				}
+			}
+
+			if !validQuery {
+				return
+			}
+
+			if toMoveorNotToMove(firstKey, rconn, kv) != "OK" {
+				return
+			}
+		}
+
+		var resp []string
+
+		for i := 0; i < len(args); i++ {
+			key := string(args[i])
+			resp = append(resp, kv.Get(key))
+		}
+
+		rconn.WriteArrayString(resp)
+	case "publish":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'PUBLISH' command"))
+			return
+		}
+
+		channel, message := string(args[0]), string(args[1])
+		rconn.WriteInt(pubsub.Publish(channel, message, ps))
+
+	case "subscribe":
+		if len(args) < 1 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'SUBSCRIBE' command"))
+			return
+		}
+
+		for i := range args {
+			channel := string(args[i])
+			pubsub.Subscribe(channel, cs.c, ps)
+			cs.subs[channel] = struct{}{}
 			rconn.WriteOK()
+		}
 
-		case "del", "delete":
-			if len(args) == 1 {
-				key := string(args[0])
+	case "unsubscribe":
+		channels := make([]string, 0, len(args))
+		for i := range args {
+			channels = append(channels, string(args[i]))
+		}
+		if len(channels) == 0 {
+			for channel := range cs.subs {
+				channels = append(channels, channel)
+			}
+		}
+		for _, channel := range channels {
+			pubsub.Unsubscribe(channel, cs.c, ps)
+			delete(cs.subs, channel)
+		}
+		rconn.WriteOK()
+
+	case "del", "delete":
+		if len(args) == 1 {
+			key := string(args[0])
+
+			if kv.Delete(key) != 1 {
+				rconn.WriteError(fmt.Errorf("ERROR deleting key\n"))
+				return
+			}
+
+		} else {
+			for _, k := range args {
+				key := string(k)
 
 				if kv.Delete(key) != 1 {
 					rconn.WriteError(fmt.Errorf("ERROR deleting key\n"))
-					continue
+					return
 				}
 
+			}
+		}
+
+		rconn.WriteOK()
+
+	case "getkeysinslot":
+		if len(args) != 2 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'GETKEYSINSLOT' command"))
+			return
+		}
+
+		s, b := string(args[0]), string(args[1])
+		slot, err := strconv.Atoi(s)
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("Error converting slot to int %s", err))
+			return
+		}
+		batchSize, err := strconv.Atoi(b)
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("Error converting batchSize to int %s", err))
+			return
+		}
+
+		keys := make([]string, 0)
+		keys = kv.GetKeysInSlot(uint64(slot), int(batchSize))
+
+		rconn.WriteArrayString(keys)
+
+	case "restore-asking":
+		if len(args) != 3 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'RESTORE-ASKING' command"))
+			return
+		}
+
+		key, dump := string(args[0]), string(args[3]) // todo ADD TTL as second arg once TTL is implemented
+
+		value, err := clusters.RestoreDataFromBinaryDump(dump)
+		if err != nil {
+			rconn.WriteError(fmt.Errorf("RESTORE ASKING ERROR: %w", err))
+			return
+		}
+
+		kv.Set(key, value)
+
+		rconn.WriteOK()
+
+	case "setslot":
+		if err := clusters.ClusterSetSlot(args); err != nil {
+			rconn.WriteError(fmt.Errorf("SETSLOT ERROR: %w", err))
+			return
+		}
+
+		rconn.WriteOK()
+
+	case "migrate":
+		// ponytail: this dials peers and does synchronous request/response on the
+		// event loop, blocking other clients for the duration. Acceptable because
+		// MIGRATE only runs during manual resharding (a rare admin operation);
+		// move it to a helper goroutine + task queue if resharding must be online.
+		if len(args) != 6 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MIGRATE' command"))
+			return
+		}
+
+		targetHost, targetPort := string(args[0]), string(args[1])
+
+		if string(args[5]) != "KEYS" {
+			rconn.WriteError(fmt.Errorf("INVALID MIGRATE COMMAND SYNTAX"))
+			return
+		}
+
+		targetKeys := make([]string, len(args[6:]))
+
+		for i, key := range args[6:] {
+			targetKeys[i] = string(key)
+		}
+
+		for _, key := range targetKeys {
+			val := kv.Get(key)
+			dump := clusters.EncodeBinaryDump(val)
+
+			targetConn, err := net.Dial("tcp", net.JoinHostPort(targetHost, targetPort))
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				continue
+			}
+			targetRconn := resp.NewServer(targetConn)
+			targetReader := resp3.NewReader(targetConn)
+			targetRconn.WriteArrayString([]string{
+				"RESTORE-ASKING",
+				key,
+				"5000",
+				dump,
+			})
+
+			if err := utils.ExpectStringResponse(targetReader, "OK"); err != nil {
+				rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				targetConn.Close()
+				continue
 			} else {
-				for _, k := range args {
-					key := string(k)
-
-					if kv.Delete(key) != 1 {
-						rconn.WriteError(fmt.Errorf("ERROR deleting key\n"))
-						continue
-					}
-
-				}
-			}
-
-			rconn.WriteOK()
-
-		case "getkeysinslot":
-			if len(args) != 2 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'GETKEYSINSLOT' command"))
-				continue
-			}
-
-			s, b := string(args[0]), string(args[1])
-			slot, err := strconv.Atoi(s)
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("Error converting slot to int %s", err))
-				continue
-			}
-			batchSize, err := strconv.Atoi(b)
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("Error converting batchSize to int %s", err))
-				continue
-			}
-
-			keys := make([]string, 0)
-			keys = kv.GetKeysInSlot(uint64(slot), int(batchSize))
-
-			rconn.WriteArrayString(keys)
-
-		case "restore-asking":
-			if len(args) != 3 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'RESTORE-ASKING' command"))
-				continue
-			}
-
-			key, dump := string(args[0]), string(args[3]) // todo ADD TTL as second arg once TTL is implemented
-
-			value, err := clusters.RestoreDataFromBinaryDump(dump)
-			if err != nil {
-				rconn.WriteError(fmt.Errorf("RESTORE ASKING ERROR: %w", err))
-				continue
-			}
-
-			kv.Set(key, value)
-
-			rconn.WriteOK()
-
-		case "setslot":
-			if err := clusters.ClusterSetSlot(args); err != nil {
-				rconn.WriteError(fmt.Errorf("SETSLOT ERROR: %w", err))
-				continue
-			}
-
-			rconn.WriteOK()
-
-		case "migrate":
-			if len(args) != 6 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'MIGRATE' command"))
-				continue
-			}
-
-			targetHost, targetPort := string(args[0]), string(args[1])
-
-			if string(args[5]) != "KEYS" {
-				rconn.WriteError(fmt.Errorf("INVALID MIGRATE COMMAND SYNTAX"))
-				continue
-			}
-
-			targetKeys := make([]string, len(args[6:]))
-
-			for i, key := range args[6:] {
-				targetKeys[i] = string(key)
-			}
-
-			for _, key := range targetKeys {
-				val := kv.Get(key)
-				dump := clusters.EncodeBinaryDump(val)
-
-				targetConn, err := net.Dial("tcp", net.JoinHostPort(targetHost, targetPort))
-				if err != nil {
-					rconn.WriteError(fmt.Errorf("ERROR: %w", err))
-					continue
-				}
-				targetRconn := resp.NewServer(targetConn)
-				targetReader := resp3.NewReader(targetConn)
-				targetRconn.WriteArrayString([]string{
-					"RESTORE-ASKING",
-					key,
-					"5000",
-					dump,
-				})
-
-				if err := utils.ExpectStringResponse(targetReader, "OK"); err != nil {
-					rconn.WriteError(fmt.Errorf("ERROR: %w", err))
+				if kv.Delete(key) != 1 {
+					rconn.WriteError(fmt.Errorf("ERR DELETING KEY"))
 					targetConn.Close()
 					continue
-				} else {
-					if kv.Delete(key) != 1 {
-						rconn.WriteError(fmt.Errorf("ERR DELETING KEY"))
-						targetConn.Close()
-						continue
-					}
 				}
+			}
 
-				targetConn.Close()
+			targetConn.Close()
+		}
+
+		rconn.WriteOK()
+
+	case "cluster":
+		if !clusterEnabled {
+			rconn.WriteError(fmt.Errorf("Clustering is not enabled"))
+			return
+		}
+
+		if len(args) < 1 {
+			rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER' command"))
+			return
+		}
+
+		switch string(args[0]) {
+		case "SLOTS":
+			if len(args) != 1 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER SLOTS' command"))
+				return
+			}
+			if err := rconn.WriteArray(clusterSlots()); err != nil {
+				return
+			}
+
+		case "NODES":
+			if serverState == nil {
+				rconn.WriteError(fmt.Errorf("cluster state is not initialized"))
+				return
+			}
+			nodes := serverState.GetNodes()
+			snapshots := make(map[string]clusters.NodeSnapshot, len(nodes))
+			var nilNode string
+			nilNodeFound := false
+			for name, node := range nodes {
+				if node == nil {
+					nilNode = name
+					nilNodeFound = true
+					break
+				}
+				snapshots[name] = node.Snapshot()
+			}
+			if nilNodeFound {
+				rconn.WriteError(fmt.Errorf("cluster node %q is nil", nilNode))
+				return
+			}
+			payload, err := json.Marshal(snapshots)
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("encode cluster nodes: %w", err))
+				return
+			}
+			if err := rconn.WriteString(string(payload)); err != nil {
+				return
+			}
+
+		case "ADDSLOTSRANGE":
+
+			if len(args) != 3 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER ADDSLOTSRANGE' command"))
+				return
+			}
+
+			slotStart, err := strconv.Atoi(string(args[1]))
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR invalid start slot: %v", err))
+				return
+			}
+			slotEnd, err := strconv.Atoi(string(args[2]))
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR invalid end slot: %v", err))
+				return
+			}
+			if slotStart < 0 || slotEnd < slotStart || slotEnd >= clusters.CLUSTER_SLOTS {
+				rconn.WriteError(fmt.Errorf("ERR invalid slot range %d-%d", slotStart, slotEnd))
+				return
+			}
+
+			self := serverState.Self
+
+			serverState.Mu.Lock()
+			for slot := slotStart; slot <= slotEnd; slot++ {
+				serverState.Slots[slot] = self
+			}
+			self.AddSlotRange(slotStart, slotEnd)
+			serverState.Mu.Unlock()
+
+			rconn.WriteOK()
+
+		case "MYADDR":
+			self := serverState.Self.Snapshot()
+			rconn.WriteArrayString([]string{
+				self.Host,
+				strconv.Itoa(self.ClientPort),
+			})
+
+		case "MEET":
+			if len(args) != 3 {
+				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MEET' command"))
+				return
+			}
+
+			senderHost := string(args[1])
+			senderPort, err := strconv.Atoi(string(args[2]))
+			if err != nil {
+				rconn.WriteError(fmt.Errorf("ERR invalid cluster port: %v", err))
+				return
+			}
+
+			if err := clusters.ClusterStartHandshake(senderHost, senderPort); err != nil {
+				rconn.WriteError(fmt.Errorf("ERR cluster meet: %v", err))
+				return
 			}
 
 			rconn.WriteOK()
 
-		case "cluster":
-			if !clusterEnabled {
-				rconn.WriteError(fmt.Errorf("Clustering is not enabled"))
-				continue
-			}
-
-			if len(args) < 1 {
-				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER' command"))
-				continue
-			}
-
-			switch string(args[0]) {
-			case "SLOTS":
-				if len(args) != 1 {
-					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER SLOTS' command"))
-					continue
-				}
-				if err := rconn.WriteArray(clusterSlots()); err != nil {
-					return
-				}
-
-			case "NODES":
-				if serverState == nil {
-					rconn.WriteError(fmt.Errorf("cluster state is not initialized"))
-					continue
-				}
-				nodes := serverState.GetNodes()
-				snapshots := make(map[string]clusters.NodeSnapshot, len(nodes))
-				var nilNode string
-				nilNodeFound := false
-				for name, node := range nodes {
-					if node == nil {
-						nilNode = name
-						nilNodeFound = true
-						break
-					}
-					snapshots[name] = node.Snapshot()
-				}
-				if nilNodeFound {
-					rconn.WriteError(fmt.Errorf("cluster node %q is nil", nilNode))
-					continue
-				}
-				payload, err := json.Marshal(snapshots)
-				if err != nil {
-					rconn.WriteError(fmt.Errorf("encode cluster nodes: %w", err))
-					continue
-				}
-				if err := rconn.WriteString(string(payload)); err != nil {
-					return
-				}
-
-			case "ADDSLOTSRANGE":
-
-				if len(args) != 3 {
-					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER ADDSLOTSRANGE' command"))
-					continue
-				}
-
-				slotStart, err := strconv.Atoi(string(args[1]))
-				if err != nil {
-					rconn.WriteError(fmt.Errorf("ERR invalid start slot: %v", err))
-					continue
-				}
-				slotEnd, err := strconv.Atoi(string(args[2]))
-				if err != nil {
-					rconn.WriteError(fmt.Errorf("ERR invalid end slot: %v", err))
-					continue
-				}
-				if slotStart < 0 || slotEnd < slotStart || slotEnd >= clusters.CLUSTER_SLOTS {
-					rconn.WriteError(fmt.Errorf("ERR invalid slot range %d-%d", slotStart, slotEnd))
-					continue
-				}
-
-				self := serverState.Self
-
-				serverState.Mu.Lock()
-				for slot := slotStart; slot <= slotEnd; slot++ {
-					serverState.Slots[slot] = self
-				}
-				self.AddSlotRange(slotStart, slotEnd)
-				serverState.Mu.Unlock()
-
-				rconn.WriteOK()
-
-			case "MYADDR":
-				self := serverState.Self.Snapshot()
-				rconn.WriteArrayString([]string{
-					self.Host,
-					strconv.Itoa(self.ClientPort),
-				})
-
-			case "MEET":
-				if len(args) != 3 {
-					rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'CLUSTER MEET' command"))
-					continue
-				}
-
-				senderHost := string(args[1])
-				senderPort, err := strconv.Atoi(string(args[2]))
-				if err != nil {
-					rconn.WriteError(fmt.Errorf("ERR invalid cluster port: %v", err))
-					continue
-				}
-
-				if err := clusters.ClusterStartHandshake(senderHost, senderPort); err != nil {
-					rconn.WriteError(fmt.Errorf("ERR cluster meet: %v", err))
-					continue
-				}
-
-				rconn.WriteOK()
-
-			default:
-				rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))
-				continue
-			}
-
 		default:
-			rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
+			rconn.WriteError(fmt.Errorf("NO SUCH COMMAND"))
+			return
 		}
-	}
 
+	default:
+		rconn.WriteError(fmt.Errorf("unknown command '%s'", cmd))
+	}
 }
 
 func Run(port string, clusterHost string, clusterEnabled bool) {
-	listener, err := net.Listen("tcp", ":"+port)
-	if err != nil {
-		utils.PrintError(fmt.Errorf("%w: listen on port %s: %v", utils.ErrStartup, port, err))
-		return
-	}
-	defer listener.Close()
-
 	pprofAddr := os.Getenv("EMBERDB_PPROF_ADDR")
 	if pprofAddr == "" {
 		pprofAddr = "127.0.0.1:6060"
@@ -1024,7 +1047,9 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 		serverState.SetNode(self)
 		serverState.Self = self
 
-		// Cluster bus listener
+		// Cluster bus listener: pure transport. Each link's read loop deserializes
+		// frames and enqueues state mutations onto the event loop (see tasks.go);
+		// it never touches serverState or kv directly.
 		clusterBusListener, err := net.Listen(
 			"tcp",
 			fmt.Sprintf(":%d", self.GetClusterBusPort()),
@@ -1046,31 +1071,18 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 				clusters.CreateClusterLink(busConn, nil, true)
 			}
 		}()
-
-		// Cluster cron
-		go func() {
-			ticker := time.NewTicker(100 * time.Millisecond)
-			defer ticker.Stop()
-
-			iterations := 0
-
-			for range ticker.C {
-				clusters.ClusterCron(iterations)
-				iterations++
-			}
-		}()
 	}
 
-	// Normal client connections
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			utils.PrintError(fmt.Errorf("%w: accept client: %v", utils.ErrConnection, err))
-			return
-		}
-
-		log.Printf("opened connection from %s", conn.RemoteAddr())
-
-		go handleConnection(conn, kv, clusterEnabled)
+	h := &emberHandler{kv: kv, clusterEnabled: clusterEnabled}
+	// Single-threaded reactor: Multicore(false) => one event loop; Ticker(true)
+	// enables OnTick (cluster cron + task-queue drain).
+	if err := gnet.Run(
+		h,
+		"tcp://:"+port,
+		gnet.WithMulticore(false),
+		gnet.WithReuseAddr(true),
+		gnet.WithTicker(clusterEnabled),
+	); err != nil {
+		utils.PrintError(fmt.Errorf("%w: gnet run on port %s: %v", utils.ErrStartup, port, err))
 	}
 }
