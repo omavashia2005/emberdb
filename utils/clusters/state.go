@@ -4,6 +4,11 @@ import (
 	"sync"
 )
 
+// ClusterState is the cluster control plane. It is read on the event-loop goroutine
+// (command dispatch -> GetSlotOwner) and written from both the gnet ticker goroutine
+// (OnTick -> ClusterCron) and cluster-bus transport goroutines (clusterProcessMsg),
+// so it keeps an RWMutex. This is not the data hot path — the kvstore is lock-free
+// and touched only on the event loop.
 type ClusterState struct {
 	Self      *ClusterNode
 	Nodes     map[string]*ClusterNode // ID to node mapping
@@ -62,7 +67,6 @@ func (s *ClusterState) GetState() int {
 }
 
 func (s *ClusterState) GetSlotOwner(slot int) *ClusterNode {
-
 	s.Mu.RLock()
 	defer s.Mu.RUnlock()
 
@@ -82,6 +86,7 @@ func (s *ClusterState) GetSlotOwner(slot int) *ClusterNode {
 
 	return nil
 }
+
 func (s *ClusterState) SetSlotStable(slot int) error {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
@@ -91,6 +96,7 @@ func (s *ClusterState) SetSlotStable(slot int) error {
 
 	return nil
 }
+
 func (s *ClusterState) ImportingSlotsFrom(slot int, node *ClusterNode) error {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
@@ -110,7 +116,6 @@ func (s *ClusterState) MigratingSlotsTo(slot int, node *ClusterNode) error {
 }
 
 func (s *ClusterState) GetNodeFromSlot(slot uint64) *ClusterNode {
-
 	s.Mu.RLock()
 	defer s.Mu.RUnlock()
 

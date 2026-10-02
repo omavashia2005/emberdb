@@ -68,9 +68,14 @@ func clusterReadLoop(link *clusterLink) {
 		}
 
 		msg, err := deserializeClusterMsg(buf)
+		if err != nil {
+			continue
+		}
 
+		// serverState is RWMutex-guarded, so processing here on the transport
+		// goroutine is safe. (The data hot path is lock-free on the event loop;
+		// the cluster control plane is not the profiled bottleneck.)
 		clusterProcessMsg(link, msg)
-
 	}
 }
 

@@ -78,17 +78,21 @@ func ClusterStartHandshake(senderHost string, senderPort int) error {
 
 	serverState.SetNode(node)
 
-	conn, err := net.Dial(
-		"tcp",
-		net.JoinHostPort(senderHost, strconv.Itoa(senderCPort)),
-	)
-	if err != nil {
-		return err
-	}
+	// Dial off the event loop so a slow or unreachable peer never blocks command
+	// processing. clusterSendPing reads serverState, so run it back on the loop.
+	go func() {
+		conn, err := net.Dial(
+			"tcp",
+			net.JoinHostPort(senderHost, strconv.Itoa(senderCPort)),
+		)
+		if err != nil {
+			utils.PrintError(err)
+			return
+		}
 
-	link := CreateClusterLink(conn, node, false)
-
-	clusterSendPing(link, CLUSTERMSG_TYPE_PING)
+		link := CreateClusterLink(conn, node, false)
+		clusterSendPing(link, CLUSTERMSG_TYPE_PING)
+	}()
 
 	return nil
 }
