@@ -10,7 +10,7 @@
 
 - Added Redis-mapped KV regressions plus Docker-only cluster integration tests, with the exact upstream test, reason, and source link beside each case. (`utils/kvstore/kvstore_test.go`, `cmd/ember-server/main_test.go`, `integration/cluster_test.go`)
 - Added focused datatype, pub/sub, and persistence checks. (`utils/kvstore/data_types_test.go:1-57`, `utils/pubsub/pubsub_test.go:1-16`, `utils/kvstore/persistence_test.go:1-133`, `cmd/ember-server/data_types_test.go:1-46`)
-- Added `make bench`, which creates matching Docker environments and prints labeled EmberDB-vs-Redis tables for standalone and three-node-cluster GET, SET, MGET, and MSET throughput. Added `make test-cluster` for Docker-only cluster checks. (`Makefile`, `compose.benchmark.yaml`, `scripts/docker-clusters.sh`, `cmd/ember-bench/main.go`, `integration/cluster_test.go`, `redis-benchmarks.md`)
+- Added `make bench` (with `make bench-standalone` / `make bench-cluster` variants), a Go RESP benchmark harness comparing EmberDB and Redis standalone and 3-node clusters on GET/SET/MGET/MSET, across 1/10/50/100 clients and hit/miss and existing/new-key variants, using real `CLUSTER SLOTS` routing, 5 repeats with median ops/sec and p50/p95/p99/max latency, raw output in `benchmark-results/results.json`, and a static browser dashboard. Added standard `CLUSTER SLOTS` and `MOVED host:port` responses to EmberDB for real cluster-client routing. Replaces the earlier `make bench-memtier` harness. (`Makefile`, `compose.benchmark.yaml`, `scripts/docker-clusters.sh`, `scripts/bench-dashboard.html`, `cmd/ember-bench/main.go`, `cmd/ember-server/main.go`, `cmd/ember-server/main_test.go`, `redis-benchmarks.md`)
 
 ## Bugs and improvements
 

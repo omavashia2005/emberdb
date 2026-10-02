@@ -5,29 +5,32 @@ Redis source is pinned to commit `20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e`.
 ## Run the comparison
 
 ```sh
-make bench
+make bench             # EmberDB and Redis clusters
+make bench-cluster     # same cluster benchmark
 ```
 
-For a shorter or larger run:
+Each command builds 3-node EmberDB and Redis clusters, runs the harness (`cmd/ember-bench`) inside a container on the same Docker network, writes raw results to `benchmark-results/results.json`, then serves a browser dashboard over the results at `http://127.0.0.1:8080/` (set `DASHBOARD_PORT` to change the port). Press Ctrl+C to stop the dashboard once done; the Docker environment is already torn down by then.
 
-```sh
-REQUESTS=10000 CLIENTS=10 make bench
-```
+Run `./scripts/profile-bench.sh` to capture one 5-second `.trace` per product, case, and node. The files appear under `benchmark-results/profiled/traces/emberdb/` and `benchmark-results/profiled/traces/redis/`, and the dashboard's Profiling tab links to both. EmberDB files are Go runtime traces, opened with `go tool trace`. Redis files are sampled server CPU profiles, opened with the pprof web viewer to inspect hot functions, call graphs, and flame graphs. Redis cannot emit Go runtime traces, so its profile does not include goroutine or garbage-collector timelines.
 
-The command builds fresh Docker environments, creates standalone EmberDB and Redis servers plus three-node clusters for both, runs the same Go RESP client against each product, prints two labeled `EMBERDB vs REDIS` tables, then removes the containers. Every row identifies the command and shows EmberDB ops/s, Redis ops/s, and the Redis/EmberDB ratio.
+Each measured case runs 5 repeats of 20,000 requests (100,000 measured requests per case). Set `REQUESTS` to change the per-repeat count for `make bench` or `./scripts/profile-bench.sh`, for example `REQUESTS=10000 make bench`. Profiling sends additional requests during each 5-second capture.
 
-Both products use AOF with one-second fsync. Cluster traffic is distributed across all three Docker nodes with keys selected for each node's slot range. Process startup and cluster convergence happen before timing.
+The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons. Both benchmark clusters keep AOF appends and once-per-second fsync enabled by default, while automatic snapshots and AOF rewrites are disabled so full-dataset maintenance cannot pause measured commands. Set `EMBERDB_PERSISTENCE=0` before `make bench`, `make test-cluster`, or `./scripts/profile-bench.sh` to disable data persistence in both EmberDB and Redis. Redis still writes its required cluster topology file. Manual EmberDB persistence commands return an error when disabled.
 
-## Implemented workloads
+## What it measures
 
-| Output row | Redis workload mapped | Why |
-| --- | --- | --- |
-| `SET` | Default three-byte SET | Core single-key write throughput. [Redis source](https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/src/redis-benchmark.c#L1912-L1916). |
-| `GET` | Default GET | Core single-key read throughput. [Redis source](https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/src/redis-benchmark.c#L1918-L1921). |
-| `MSET_10` | Default ten-pair MSET | EmberDB's implemented bulk-write variant. [Redis source](https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/src/redis-benchmark.c#L2024-L2035). |
-| `MGET_10` | Ten-key arbitrary MGET | EmberDB's implemented bulk-read variant; Redis has no default MGET benchmark. [Redis arbitrary-command source](https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/src/redis-benchmark.c#L1878-L1888). |
+The same Go RESP client (persistent connections, pipeline depth 1) runs against each target one at a time:
 
-The cluster variants use a shared hash tag for each multi-key command, matching Redis's cluster requirement. [Redis cluster hash-tag requirement](https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/src/redis-benchmark.c#L1610-L1613).
+- Commands: `GET`, `SET`, `MGET`, `MSET` (10 keys per multi-key request).
+- Concurrency: 1, 10, 50, and 100 clients.
+- `GET`/`MGET`: 100% hit, 50% hit / 50% miss, and 100% miss variants.
+- `SET`/`MSET`: existing-key and new-key variants.
+
+The keyspace is deterministic: 100,000 keys per command, with keys `0`-`49,999` preloaded (hits) and `50,000`-`99,999` never written (misses). New-key `SET`/`MSET` variants use a run-scoped counter so every write is guaranteed novel, without reusing or deleting keys between repeats.
+
+For every (command, variant, concurrency) combination: preload the dataset once, run a short warmup, then run the measured benchmark 5 times and report the median ops/sec, p50, p95, p99, and max latency. All 5 repeats are kept in `results.json` alongside the median.
+
+Cluster mode routes with real `CLUSTER SLOTS` discovery, exactly like a production Redis cluster client: single-key `GET`/`SET` land on whatever node owns that key's hash slot (spreading naturally across all three nodes), and `MGET`/`MSET` keys share a `{tag}` hash tag so all 10 keys in one request land on the same slot, per Redis's cluster hash-tag requirement. [Redis cluster hash-tag requirement](https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/src/commands/cluster-slots.md).
 
 ## Docker cluster tests
 

@@ -1,0 +1,10 @@
+FROM golang:1.25-bookworm AS tools
+RUN go install github.com/google/pprof@v0.0.0-20240727154555-813a5fbdbec8
+
+FROM redis:7-bookworm
+RUN apt-get update -qq && apt-get install -y --no-install-recommends binutils ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=tools /usr/local/go /usr/local/go
+COPY --from=tools /go/bin/pprof /usr/local/bin/pprof
+ENV PATH="/usr/local/go/bin:${PATH}" GOPATH=/go CGO_ENABLED=0
+ENTRYPOINT []
+CMD ["sleep", "infinity"]

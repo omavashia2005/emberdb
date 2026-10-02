@@ -20,6 +20,8 @@ git clone https://github.com/omavashia2005/emberdb.git && cd emberdb
 ```
 ## Run 
 
+Persistence is enabled by default. Set `EMBERDB_PERSISTENCE=0` to run entirely in memory: existing AOF/RDB files are ignored, and no new ones are written. This applies to standalone servers, cluster nodes, and servers started from the CLI. For Docker Compose, prefix the command with the variable (for example, `EMBERDB_PERSISTENCE=0 docker compose up --build`). `SAVE`, `BGSAVE`, and `BGREWRITEAOF` return an error while disabled. Set `EMBERDB_PERSISTENCE=1` (or leave it unset) to enable persistence again.
+
 ### Normal Mode
 
 Open connection to server

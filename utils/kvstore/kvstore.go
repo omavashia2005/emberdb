@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lobaro/crc16"
+	"github.com/omavashia2005/emberdb/utils/persistence"
 )
 
 type DataType uint8
@@ -47,7 +48,7 @@ type KVStore struct {
 	CommandsProcessed int
 	SlotKeys          [16384]map[string]Value
 	clusterEnabled    bool
-	persistence       *persistence
+	persistence       *persistence.Store[rdbSnapshot]
 }
 
 func NewKVStore(clusterEnabled ...bool) *KVStore {

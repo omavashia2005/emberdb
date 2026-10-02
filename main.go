@@ -23,8 +23,9 @@ func startCluster() error {
 		return fmt.Errorf("%w: find executable: %v", utils.ErrStartup, err)
 	}
 
-	for _, port := range CLUSTER_PORTS {
+	for i, port := range CLUSTER_PORTS {
 		cmd := exec.Command(exe, "__node", port, "127.0.0.1")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("EMBERDB_PPROF_ADDR=127.0.0.1:%d", 6060+i))
 
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
