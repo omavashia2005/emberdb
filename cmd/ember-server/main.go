@@ -134,6 +134,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGSAVE' command"))
 				continue
 			}
+			if !kv.PersistenceEnabled() {
+				rconn.WriteError(fmt.Errorf("persistence is not enabled"))
+				continue
+			}
 			go func() {
 				if err := kv.SaveRDB(); err != nil {
 					utils.PrintError(err)
@@ -143,6 +147,10 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 		case "bgrewriteaof":
 			if len(args) != 0 {
 				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGREWRITEAOF' command"))
+				continue
+			}
+			if !kv.PersistenceEnabled() {
+				rconn.WriteError(fmt.Errorf("persistence is not enabled"))
 				continue
 			}
 			go func() {
@@ -460,7 +468,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 			if clusterEnabled && toMoveorNotToMove(key, rconn, kv) != "OK" {
 				continue
 			}
-
 
 			if val == "(nil)" {
 				rconn.WriteStatusString("No such key")

@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -77,6 +78,30 @@ func (s *commandServer) run(tb testing.TB, payload []byte) any {
 		tb.Fatal(err)
 	}
 	return value.SmartResult()
+}
+
+func TestDisabledPersistenceCommands(t *testing.T) {
+	t.Setenv("EMBERDB_PERSISTENCE", "0")
+	kv, err := kvstore.OpenPersistent(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, server := net.Pipe()
+	go handleConnection(server, kv, false)
+	defer client.Close()
+	reader := resp3.NewReader(client)
+	for _, name := range []string{"SAVE", "BGSAVE", "BGREWRITEAOF"} {
+		if _, err := client.Write(command(name)); err != nil {
+			t.Fatal(err)
+		}
+		value, _, err := reader.ReadValue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value.Err == "" {
+			t.Fatalf("%s succeeded with persistence disabled", name)
+		}
+	}
 }
 
 // Redis mapping: "MSET base case".
