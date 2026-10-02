@@ -79,7 +79,7 @@ func (db *DoubleBuffer) flusher(wr io.Writer) {
 	}()
 
 	frontBuffer := bytesPool.Get().([]byte)
-	defer bytesPool.Put(frontBuffer)
+	defer func() { bytesPool.Put(frontBuffer) }()
 
 	for range db.dataReadyFlag {
 		if db.profile {

@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"io"
 	"testing"
-	"time"
 )
 
 func TestDoubleBufferSmallWrites(t *testing.T) {
 	buf := &bytes.Buffer{}
 	db := NewWriterSize(buf, 1024)
-	defer db.Close()
 
 	data := []byte("Hello, World!")
 	n, err := db.Write(data)
@@ -21,8 +19,9 @@ func TestDoubleBufferSmallWrites(t *testing.T) {
 		t.Fatalf("Write returned wrong length: got %d, want %d", n, len(data))
 	}
 
-	// Give the flusher goroutine time to write
-	time.Sleep(10 * time.Millisecond)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := buf.String(); got != string(data) {
 		t.Fatalf("Wrong data written: got %q, want %q", got, string(data))
@@ -32,7 +31,6 @@ func TestDoubleBufferSmallWrites(t *testing.T) {
 func TestDoubleBufferLargeWrites(t *testing.T) {
 	buf := &bytes.Buffer{}
 	db := NewWriterSize(buf, 16)
-	defer db.Close()
 
 	data := bytes.Repeat([]byte("abcdefghijklmnop"), 4)
 	n, err := db.Write(data)
@@ -43,8 +41,9 @@ func TestDoubleBufferLargeWrites(t *testing.T) {
 		t.Fatalf("Write returned wrong length: got %d, want %d", n, len(data))
 	}
 
-	// Give the flusher goroutine time to write
-	time.Sleep(10 * time.Millisecond)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := buf.String(); got != string(data) {
 		t.Fatalf("Wrong data written: got %q, want %q", got, string(data))
@@ -61,9 +60,6 @@ func TestDoubleBufferReset(t *testing.T) {
 		t.Fatalf("First write failed: %v", err)
 	}
 
-	// Give the flusher goroutine time to write
-	time.Sleep(10 * time.Millisecond)
-
 	buf2 := &bytes.Buffer{}
 	db.Reset(buf2)
 
@@ -73,8 +69,9 @@ func TestDoubleBufferReset(t *testing.T) {
 		t.Fatalf("Second write failed: %v", err)
 	}
 
-	// Give the flusher goroutine time to write
-	time.Sleep(10 * time.Millisecond)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := buf1.String(); got != string(data1) {
 		t.Fatalf("Wrong data in first buffer: got %q, want %q", got, string(data1))
