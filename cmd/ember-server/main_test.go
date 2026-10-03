@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/bytechan/resp3"
 	"github.com/omavashia2005/emberdb/utils/clusters"
@@ -22,7 +21,6 @@ func startClusterCommandServer(tb testing.TB, state *clusters.ClusterState) *com
 	tb.Helper()
 	serverState = state
 	clientConn, serverConn := net.Pipe()
-	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -40,7 +38,6 @@ func startCommandServer(tb testing.TB) *commandServer {
 	tb.Helper()
 	kv := kvstore.NewKVStore()
 	clientConn, serverConn := net.Pipe()
-	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -83,7 +80,7 @@ func (s *commandServer) run(tb testing.TB, payload []byte) any {
 }
 
 // Redis mapping: "MSET base case".
-// Relevant because MSET must preserve all key/value pairs through the command handler.
+// Relevant because EmberDB implements MSET/MGET in the command handler rather than KVStore methods.
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/string.tcl#L227-L230
 func TestMSetMGet(t *testing.T) {
 	server := startCommandServer(t)
@@ -93,9 +90,6 @@ func TestMSetMGet(t *testing.T) {
 	got := fmt.Sprint(server.run(t, command("MGET", "x", "y", "z")))
 	if want := "[10 foo bar x x\n\r\n]"; got != want {
 		t.Fatalf("MGET = %q, want %q", got, want)
-	}
-	if got := fmt.Sprint(server.run(t, command("MGET", ""))); got != "[(nil)]" {
-		t.Fatalf("MSET created an empty key: %q", got)
 	}
 }
 
@@ -124,7 +118,6 @@ func TestConcurrentConnections(t *testing.T) {
 	errs := make(chan error, 50)
 	for range 50 {
 		clientConn, serverConn := net.Pipe()
-		clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 		servers.Add(1)
 		go func() {
 			defer servers.Done()

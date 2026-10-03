@@ -50,7 +50,7 @@ sleep 10
 
 case "$mode" in
   test)
-    EMBER_CLUSTER_ADDR=$ember_1 REDIS_CLUSTER_ADDR=$redis_1 go test ./tests/integration -count=1 -v
+    EMBER_CLUSTER_ADDR=$ember_1 REDIS_CLUSTER_ADDR=$redis_1 go test ./integration -count=1 -v
     ;;
   bench)
     results=${RESULTS_DIR:-benchmark-results}
