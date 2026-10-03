@@ -1,4 +1,4 @@
-package resp
+package resp_test
 
 import (
 	"bufio"
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Fusl/go-resp"
 )
 
 func randomString(l int) string {
@@ -58,7 +60,7 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func GetTestingClientConnParser(b []byte) *Server {
+func GetTestingClientConnParser(b []byte) *resp.Server {
 	bytesReader := bytes.NewReader(b)
 	bufioReader := bufio.NewReader(bytesReader)
 	bufioWriter := bufio.NewWriter(io.Discard)
@@ -68,7 +70,7 @@ func GetTestingClientConnParser(b []byte) *Server {
 		w: bufioWriter,
 	}
 
-	return NewServer(conn)
+	return resp.NewServer(conn)
 }
 
 var parserTestCases = map[string][][]string{
@@ -118,18 +120,17 @@ var parserTestCases = map[string][][]string{
 func TestServerParser(t *testing.T) {
 	bytesRd := bytes.NewReader(nil)
 	bufRd := bufio.NewReader(bytesRd)
-	server := &Server{
-		rd:                 bufRd,
-		maxMultiBulkLength: 16,
-		maxBulkLength:      1024,
-		maxBufferSize:      65536,
-	}
+	server := resp.NewServer(&Conn{r: bufRd, w: io.Discard})
+	defer server.Close()
+	server.SetOptions(resp.ServerOptions{
+		MaxMultiBulkLength: resp.Pointer(16),
+		MaxBulkLength:      resp.Pointer(1024),
+		MaxBufferSize:      resp.Pointer(65536),
+	})
 	for input, expected := range parserTestCases {
 		t.Run(strings.ReplaceAll(input[:min(len(input), 32)], "\r\n", ","), func(t *testing.T) {
-			server.rerr = nil
-			server.werr = nil
 			bytesRd.Reset([]byte(input))
-			bufRd.Reset(bytesRd)
+			server.ResetReader(bytesRd)
 			for _, expected := range expected {
 				args, err := server.Next()
 				if expected == nil {
@@ -160,21 +161,20 @@ func TestServerParser(t *testing.T) {
 func BenchmarkServerParser(b *testing.B) {
 	bytesRd := bytes.NewReader(nil)
 	bufRd := bufio.NewReader(bytesRd)
-	server := &Server{
-		rd:                 bufRd,
-		maxMultiBulkLength: 16,
-		maxBulkLength:      1024,
-		maxBufferSize:      65536,
-	}
+	server := resp.NewServer(&Conn{r: bufRd, w: io.Discard})
+	defer server.Close()
+	server.SetOptions(resp.ServerOptions{
+		MaxMultiBulkLength: resp.Pointer(16),
+		MaxBulkLength:      resp.Pointer(1024),
+		MaxBufferSize:      resp.Pointer(65536),
+	})
 	for input := range parserTestCases {
 		b.Run(strings.ReplaceAll(input[:min(len(input), 32)], "\r\n", ","), func(b *testing.B) {
 			bytesRd.Reset([]byte(input))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				server.rerr = nil
-				server.werr = nil
 				bytesRd.Seek(0, io.SeekStart)
-				bufRd.Reset(bytesRd)
+				server.ResetReader(bytesRd)
 				for {
 					args, err := server.Next()
 					if err != nil {
@@ -191,10 +191,10 @@ func TestServerLimits(t *testing.T) {
 	t.Run("Baseline_MultiBulk", func(t *testing.T) {
 		rconn := GetTestingClientConnParser([]byte("*1\r\n$3\r\nfoo\r\n"))
 		defer rconn.Close()
-		rconn.SetOptions(ServerOptions{
-			MaxMultiBulkLength: Pointer(1),
-			MaxBulkLength:      Pointer(3),
-			MaxBufferSize:      Pointer(5),
+		rconn.SetOptions(resp.ServerOptions{
+			MaxMultiBulkLength: resp.Pointer(1),
+			MaxBulkLength:      resp.Pointer(3),
+			MaxBufferSize:      resp.Pointer(5),
 		})
 		args, err := rconn.Next()
 		if err != nil {
@@ -207,10 +207,10 @@ func TestServerLimits(t *testing.T) {
 	t.Run("Baseline_Simple", func(t *testing.T) {
 		rconn := GetTestingClientConnParser([]byte("foo\r\n"))
 		defer rconn.Close()
-		rconn.SetOptions(ServerOptions{
-			MaxMultiBulkLength: Pointer(1),
-			MaxBulkLength:      Pointer(3),
-			MaxBufferSize:      Pointer(5),
+		rconn.SetOptions(resp.ServerOptions{
+			MaxMultiBulkLength: resp.Pointer(1),
+			MaxBulkLength:      resp.Pointer(3),
+			MaxBufferSize:      resp.Pointer(5),
 		})
 		args, err := rconn.Next()
 		if err != nil {
@@ -223,8 +223,8 @@ func TestServerLimits(t *testing.T) {
 	t.Run("MaxMultiBulkLength", func(t *testing.T) {
 		rconn := GetTestingClientConnParser([]byte("*5\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n"))
 		defer rconn.Close()
-		rconn.SetOptions(ServerOptions{
-			MaxMultiBulkLength: Pointer(4),
+		rconn.SetOptions(resp.ServerOptions{
+			MaxMultiBulkLength: resp.Pointer(4),
 		})
 		args, err := rconn.Next()
 		if err == nil {
@@ -237,8 +237,8 @@ func TestServerLimits(t *testing.T) {
 	t.Run("MaxBulkLength", func(t *testing.T) {
 		rconn := GetTestingClientConnParser([]byte("*1\r\n$1025\r\n" + strings.Repeat("a", 1025) + "\r\n"))
 		defer rconn.Close()
-		rconn.SetOptions(ServerOptions{
-			MaxBulkLength: Pointer(1024),
+		rconn.SetOptions(resp.ServerOptions{
+			MaxBulkLength: resp.Pointer(1024),
 		})
 		args, err := rconn.Next()
 		if err == nil {
@@ -251,8 +251,8 @@ func TestServerLimits(t *testing.T) {
 	t.Run("MaxBufferSize_MultiBulk", func(t *testing.T) {
 		rconn := GetTestingClientConnParser([]byte("*1\r\n$3\r\nfoo\r\n"))
 		defer rconn.Close()
-		rconn.SetOptions(ServerOptions{
-			MaxBufferSize: Pointer(4),
+		rconn.SetOptions(resp.ServerOptions{
+			MaxBufferSize: resp.Pointer(4),
 		})
 		args, err := rconn.Next()
 		if err == nil {
@@ -265,8 +265,8 @@ func TestServerLimits(t *testing.T) {
 	t.Run("MaxBufferSize_SimpleString", func(t *testing.T) {
 		rconn := GetTestingClientConnParser([]byte("foo\r\n"))
 		defer rconn.Close()
-		rconn.SetOptions(ServerOptions{
-			MaxBufferSize: Pointer(2),
+		rconn.SetOptions(resp.ServerOptions{
+			MaxBufferSize: resp.Pointer(2),
 		})
 		args, err := rconn.Next()
 		if err == nil {
@@ -285,21 +285,20 @@ func FuzzServerParser(f *testing.F) {
 
 	bytesRd := bytes.NewReader(nil)
 	bufRd := bufio.NewReader(bytesRd)
-	server := &Server{
-		rd:                 bufRd,
-		maxMultiBulkLength: 64,
-		maxBulkLength:      65536,
-		maxBufferSize:      1048576,
-	}
+	server := resp.NewServer(&Conn{r: bufRd, w: io.Discard})
+	f.Cleanup(func() { server.Close() })
+	server.SetOptions(resp.ServerOptions{
+		MaxMultiBulkLength: resp.Pointer(64),
+		MaxBulkLength:      resp.Pointer(65536),
+		MaxBufferSize:      resp.Pointer(1048576),
+	})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		server.rerr = nil
-		server.werr = nil
 		bytesRd.Reset(data)
-		bufRd.Reset(bytesRd)
+		server.ResetReader(bytesRd)
 		_, err := server.Next()
 		switch err {
-		case nil, io.EOF, io.ErrUnexpectedEOF, ErrProtoInvalidMultiBulkLength, ErrProtoInvalidBulkLength, ErrProtoUnbalancedQuotes, ErrProtoExpectedString, bufio.ErrBufferFull:
+		case nil, io.EOF, io.ErrUnexpectedEOF, resp.ErrProtoInvalidMultiBulkLength, resp.ErrProtoInvalidBulkLength, resp.ErrProtoUnbalancedQuotes, resp.ErrProtoExpectedString, bufio.ErrBufferFull:
 		default:
 			panic(string(data) + " " + err.Error())
 		}

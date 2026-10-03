@@ -44,11 +44,13 @@ Stop the cluster with `docker compose down`.
 ## Tests and benchmarks
 
 ```sh
-go test ./...                # unit tests; Docker integration test is skipped
+make test                   # all Go tests in tests/; Docker integration test is skipped
 make test-cluster            # three-node EmberDB and Redis integration tests
 make bench                   # three-node throughput and latency comparison
 ./scripts/profile-bench.sh   # EmberDB runtime traces and Redis CPU profiles
 ```
+
+All Go test files live under `tests/`. The `make test` target uses Go's overlay option to retain access to private server and benchmark functions.
 
 The benchmark opens a results dashboard at `http://127.0.0.1:8080/`; press Ctrl+C to stop it. Set `REQUESTS` to change requests per run, or `DASHBOARD_PORT` to change the dashboard port. Both products use memory only for benchmark data; Redis still writes its required cluster topology file. See [benchmark details](docs/redis-benchmarks.md).
 
