@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/bytechan/resp3"
 	"github.com/omavashia2005/emberdb/utils/clusters"
@@ -22,7 +21,6 @@ func startClusterCommandServer(tb testing.TB, state *clusters.ClusterState) *com
 	tb.Helper()
 	serverState = state
 	clientConn, serverConn := net.Pipe()
-	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -40,7 +38,6 @@ func startCommandServer(tb testing.TB) *commandServer {
 	tb.Helper()
 	kv := kvstore.NewKVStore()
 	clientConn, serverConn := net.Pipe()
-	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -121,7 +118,6 @@ func TestConcurrentConnections(t *testing.T) {
 	errs := make(chan error, 50)
 	for range 50 {
 		clientConn, serverConn := net.Pipe()
-		clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 		servers.Add(1)
 		go func() {
 			defer servers.Done()

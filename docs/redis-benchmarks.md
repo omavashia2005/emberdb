@@ -38,7 +38,7 @@ Cluster mode routes with real `CLUSTER SLOTS` discovery, exactly like a producti
 make test-cluster
 ```
 
-This creates both three-node Docker clusters and runs the Redis-mapped SET/GET, same-slot MSET/MGET, and topology checks in `tests/integration/cluster_test.go`. Ordinary `make test` skips this integration test when the Docker addresses are absent.
+This creates both three-node Docker clusters and runs the Redis-mapped SET/GET, same-slot MSET/MGET, and topology checks in `integration/cluster_test.go`. Ordinary `go test ./...` skips this integration test when the Docker addresses are absent.
 
 ## Relevant benchmarks intentionally not implemented
 
@@ -55,5 +55,5 @@ These remain inventory only, as requested in `NEW-FEATURES.md`.
 
 ## Redis incompatibilities exposed by mapped tests
 
-- MGET encodes a missing element as the literal string `(nil)` instead of a RESP null. The source-linked regression remains skipped under `tests/`.
-- DECRBY with the minimum signed integer wraps during negation instead of returning Redis's overflow error. The source-linked regression remains skipped under `tests/`.
+- MGET encodes a missing element as the literal string `(nil)` instead of a RESP null. The source-linked regression remains skipped in `cmd/ember-server/main_test.go`.
+- DECRBY with the minimum signed integer wraps during negation instead of returning Redis's overflow error. The source-linked regression remains skipped in `utils/kvstore/kvstore_test.go`.

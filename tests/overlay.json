@@ -1,8 +1,0 @@
-{
-  "Replace": {
-    "cmd/ember-bench/main_test.go": "tests/_bench/main_test.go",
-    "cmd/ember-bench/redis_trace_test.go": "tests/_bench/redis_trace_test.go",
-    "cmd/ember-server/main_test.go": "tests/_server/main_test.go",
-    "cmd/ember-server/data_types_test.go": "tests/_server/data_types_test.go"
-  }
-}
