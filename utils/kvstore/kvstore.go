@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/lobaro/crc16"
-	"github.com/omavashia2005/emberdb/utils/persistence"
 )
 
 type DataType uint8
@@ -48,7 +47,6 @@ type KVStore struct {
 	CommandsProcessed int
 	SlotKeys          [16384]map[string]Value
 	clusterEnabled    bool
-	persistence       *persistence.Store[rdbSnapshot]
 }
 
 func NewKVStore(clusterEnabled ...bool) *KVStore {
@@ -92,9 +90,6 @@ func (kv *KVStore) setValue(key string, value Value) {
 func (kv *KVStore) Set(key, value string) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if kv.persist("SET", key, value) != nil {
-		return
-	}
 	if kv.clusterEnabled {
 		kv.setValue(key, Value{Type: StringType, String: value})
 		return
@@ -125,9 +120,6 @@ func (kv *KVStore) Delete(key string) int {
 		if _, ok := kv.SlotKeys[slot][key]; !ok {
 			return 0
 		}
-		if kv.persist("DEL", key) != nil {
-			return 0
-		}
 		delete(kv.SlotKeys[slot], key)
 		return 1
 	}
@@ -137,9 +129,6 @@ func (kv *KVStore) Delete(key string) int {
 	_, setFound := kv.Sets[key]
 	_, sortedSetFound := kv.SortedSets[key]
 	if !stringFound && !listFound && !hashFound && !setFound && !sortedSetFound {
-		return 0
-	}
-	if kv.persist("DEL", key) != nil {
 		return 0
 	}
 	if stringFound {
@@ -165,14 +154,8 @@ func (kv *KVStore) Append(key, suffix string) error {
 	defer kv.mu.Unlock()
 	if kv.clusterEnabled {
 		value, _ := kv.value(key, StringType)
-		if err := kv.persist("SET", key, value.String+suffix); err != nil {
-			return err
-		}
 		kv.setValue(key, Value{Type: StringType, String: value.String + suffix})
 		return nil
-	}
-	if err := kv.persist("SET", key, kv.Strings[key]+suffix); err != nil {
-		return err
 	}
 	kv.Strings[key] += suffix
 	return nil
@@ -199,9 +182,6 @@ func (kv *KVStore) changeInteger(key string, delta int) error {
 		}
 	}
 	current = strconv.Itoa(n + delta)
-	if err := kv.persist("SET", key, current); err != nil {
-		return err
-	}
 	if kv.clusterEnabled {
 		kv.setValue(key, Value{Type: StringType, String: current})
 	} else {
@@ -252,7 +232,7 @@ func (kv *KVStore) LPush(key string, values ...string) int {
 	} else {
 		list = kv.Lists[key]
 	}
-	if len(values) == 0 || kv.persist(append([]string{"LPUSH", key}, values...)...) != nil {
+	if len(values) == 0 {
 		return len(list)
 	}
 	for i := len(values) - 1; i >= 0; i-- {
@@ -279,9 +259,6 @@ func (kv *KVStore) LPop(key string) (string, bool) {
 	if len(list) == 0 {
 		return "", false
 	}
-	if kv.persist("LPOP", key) != nil {
-		return "", false
-	}
 	result := list[0]
 	list = list[1:]
 	if kv.clusterEnabled {
@@ -302,7 +279,7 @@ func (kv *KVStore) RPush(key string, values ...string) int {
 	} else {
 		list = kv.Lists[key]
 	}
-	if len(values) == 0 || kv.persist(append([]string{"RPUSH", key}, values...)...) != nil {
+	if len(values) == 0 {
 		return len(list)
 	}
 	list = append(list, values...)
@@ -325,9 +302,6 @@ func (kv *KVStore) RPop(key string) (string, bool) {
 		list = kv.Lists[key]
 	}
 	if len(list) == 0 {
-		return "", false
-	}
-	if kv.persist("RPOP", key) != nil {
 		return "", false
 	}
 	last := len(list) - 1
@@ -391,13 +365,6 @@ func (kv *KVStore) HMSet(key string, fields map[string]string) {
 		hash = make(map[string]string)
 	}
 	if len(fields) == 0 {
-		return
-	}
-	command := []string{"HMSET", key}
-	for _, field := range sortedKeys(fields) {
-		command = append(command, field, fields[field])
-	}
-	if kv.persist(command...) != nil {
 		return
 	}
 	for field, value := range fields {
@@ -479,15 +446,6 @@ func (kv *KVStore) HDel(key string, fields ...string) int {
 	removed := 0
 	for _, field := range fields {
 		if _, ok := hash[field]; ok {
-			removed++
-		}
-	}
-	if removed == 0 || kv.persist(append([]string{"HDEL", key}, fields...)...) != nil {
-		return 0
-	}
-	removed = 0
-	for _, field := range fields {
-		if _, ok := hash[field]; ok {
 			delete(hash, field)
 			removed++
 		}
@@ -509,19 +467,10 @@ func (kv *KVStore) SAdd(key string, members ...string) int {
 		set = make(map[string]struct{})
 	}
 	added := 0
-	newMembers := make(map[string]struct{}, len(members))
 	for _, member := range members {
 		if _, ok := set[member]; !ok {
-			newMembers[member] = struct{}{}
-		}
-	}
-	added = len(newMembers)
-	if added > 0 {
-		if kv.persist(append([]string{"SADD", key}, members...)...) != nil {
-			return 0
-		}
-		for member := range newMembers {
 			set[member] = struct{}{}
+			added++
 		}
 	}
 	if kv.clusterEnabled {
@@ -578,15 +527,6 @@ func (kv *KVStore) SRem(key string, members ...string) int {
 	removed := 0
 	for _, member := range members {
 		if _, ok := set[member]; ok {
-			removed++
-		}
-	}
-	if removed == 0 || kv.persist(append([]string{"SREM", key}, members...)...) != nil {
-		return 0
-	}
-	removed = 0
-	for _, member := range members {
-		if _, ok := set[member]; ok {
 			delete(set, member)
 			removed++
 		}
@@ -614,9 +554,6 @@ func (kv *KVStore) ZAdd(key string, pairs ...string) (int, error) {
 		sortedSet = value.SortedSet
 	} else {
 		sortedSet = kv.SortedSets[key]
-	}
-	if err := kv.persist(append([]string{"ZADD", key}, pairs...)...); err != nil {
-		return 0, err
 	}
 	added := 0
 	for i, score := range scores {
@@ -698,9 +635,6 @@ func (kv *KVStore) ZRem(key string, members ...string) int {
 	if removed == 0 {
 		return 0
 	}
-	if kv.persist(append([]string{"ZREM", key}, members...)...) != nil {
-		return 0
-	}
 	kept := make([]SortedSetMember, 0, len(sortedSet)-removed)
 	for _, member := range sortedSet {
 		if _, ok := remove[member.Member]; !ok {
@@ -718,9 +652,6 @@ func (kv *KVStore) ZRem(key string, members ...string) int {
 func (kv *KVStore) FlushAll() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if kv.persist("FLUSHALL") != nil {
-		return
-	}
 	if kv.clusterEnabled {
 		kv.SlotKeys = [16384]map[string]Value{}
 		return

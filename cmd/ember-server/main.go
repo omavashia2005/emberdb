@@ -9,7 +9,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -118,47 +117,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 		case "flushall":
 			kv.FlushAll()
 			rconn.WriteOK()
-		case "save":
-			if len(args) != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'SAVE' command"))
-				continue
-			}
-			if err := kv.SaveRDB(); err != nil {
-				rconn.WriteError(err)
-				continue
-			}
-			rconn.WriteOK()
-		case "bgsave":
-			if len(args) != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGSAVE' command"))
-				continue
-			}
-			if !kv.PersistenceEnabled() {
-				rconn.WriteError(fmt.Errorf("persistence is not enabled"))
-				continue
-			}
-			go func() {
-				if err := kv.SaveRDB(); err != nil {
-					utils.PrintError(err)
-				}
-			}()
-			rconn.WriteStatusString("Background saving started")
-		case "bgrewriteaof":
-			if len(args) != 0 {
-				rconn.WriteError(fmt.Errorf("ERR Wrong number of arguments for 'BGREWRITEAOF' command"))
-				continue
-			}
-			if !kv.PersistenceEnabled() {
-				rconn.WriteError(fmt.Errorf("persistence is not enabled"))
-				continue
-			}
-			go func() {
-				if err := kv.RewriteAOF(); err != nil {
-					utils.PrintError(err)
-				}
-			}()
-			rconn.WriteStatusString("Background append only file rewriting started")
-
 		case "ping":
 			if clusterEnabled {
 				self := serverState.Self.Snapshot()
@@ -982,23 +940,7 @@ func Run(port string, clusterHost string, clusterEnabled bool) {
 		}()
 	}
 
-	dataDir := os.Getenv("EMBERDB_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "."
-	}
-	kv, err := kvstore.OpenPersistent(
-		filepath.Join(dataDir, "emberdb-"+strings.TrimPrefix(port, ":")),
-		clusterEnabled,
-	)
-	if err != nil {
-		utils.PrintError(fmt.Errorf("%w: load persistence: %v", utils.ErrStartup, err))
-		return
-	}
-	defer func() {
-		if err := kv.Close(); err != nil {
-			utils.PrintError(fmt.Errorf("%w: close persistence: %v", utils.ErrStartup, err))
-		}
-	}()
+	kv := kvstore.NewKVStore(clusterEnabled)
 
 	if clusterEnabled {
 		serverState = &clusters.ClusterState{

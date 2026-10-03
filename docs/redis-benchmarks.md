@@ -15,7 +15,7 @@ Run `./scripts/profile-bench.sh` to capture one 5-second `.trace` per product, c
 
 Each measured case runs 5 repeats of 20,000 requests (100,000 measured requests per case). Set `REQUESTS` to change the per-repeat count for `make bench` or `./scripts/profile-bench.sh`, for example `REQUESTS=10000 make bench`. Profiling sends additional requests during each 5-second capture.
 
-The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons. Both benchmark clusters keep AOF appends and once-per-second fsync enabled by default, while automatic snapshots and AOF rewrites are disabled so full-dataset maintenance cannot pause measured commands. Set `EMBERDB_PERSISTENCE=0` before `make bench`, `make test-cluster`, or `./scripts/profile-bench.sh` to disable data persistence in both EmberDB and Redis. Redis still writes its required cluster topology file. Manual EmberDB persistence commands return an error when disabled.
+The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons. Both benchmark clusters use memory only for data. Redis still writes its required cluster topology file.
 
 ## What it measures
 

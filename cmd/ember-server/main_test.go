@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"net"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -78,30 +77,6 @@ func (s *commandServer) run(tb testing.TB, payload []byte) any {
 		tb.Fatal(err)
 	}
 	return value.SmartResult()
-}
-
-func TestDisabledPersistenceCommands(t *testing.T) {
-	t.Setenv("EMBERDB_PERSISTENCE", "0")
-	kv, err := kvstore.OpenPersistent(filepath.Join(t.TempDir(), "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, server := net.Pipe()
-	go handleConnection(server, kv, false)
-	defer client.Close()
-	reader := resp3.NewReader(client)
-	for _, name := range []string{"SAVE", "BGSAVE", "BGREWRITEAOF"} {
-		if _, err := client.Write(command(name)); err != nil {
-			t.Fatal(err)
-		}
-		value, _, err := reader.ReadValue()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if value.Err == "" {
-			t.Fatalf("%s succeeded with persistence disabled", name)
-		}
-	}
 }
 
 // Redis mapping: "MSET base case".
@@ -206,5 +181,30 @@ func TestClusterSlotsAndMovedAddress(t *testing.T) {
 	wantMoved := fmt.Sprintf("MOVED %d ember-2:6379", kvstore.SlotForKey(key))
 	if got := server.run(t, command("GET", key)); got != wantMoved {
 		t.Fatalf("GET redirect = %q, want %q", got, wantMoved)
+	}
+}
+
+func TestCommandErrorsKeepConnectionOpen(t *testing.T) {
+	for _, args := range [][]string{
+		{"SAVE"}, {"BGSAVE"}, {"BGREWRITEAOF"}, {"UNKNOWN"},
+		{"SET"}, {"LPUSH"}, {"HSET"}, {"SADD"}, {"ZADD"},
+		{"LRANGE", "list", "invalid", "-1"},
+	} {
+		t.Run(args[0]+fmt.Sprint(args[1:]), func(t *testing.T) {
+			server := startCommandServer(t)
+			if _, err := server.conn.Write(command(args...)); err != nil {
+				t.Fatal(err)
+			}
+			value, _, err := server.reader.ReadValue()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.Err == "" {
+				t.Fatalf("%v returned success: %#v", args, value.SmartResult())
+			}
+			if got := server.run(t, command("PING")); got != "PONG" {
+				t.Fatalf("PING after %v = %#v", args, got)
+			}
+		})
 	}
 }

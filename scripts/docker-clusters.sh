@@ -9,13 +9,6 @@ case "$mode" in
 esac
 [ "$#" -eq 1 ] || { echo "usage: $0 bench | test" >&2; exit 2; }
 
-if [ "${EMBERDB_PERSISTENCE:-1}" = 0 ]; then
-  REDIS_APPENDONLY=no
-else
-  REDIS_APPENDONLY=yes
-fi
-export REDIS_APPENDONLY
-
 compose="docker compose -p emberdb-bench -f compose.benchmark.yaml"
 if [ "$mode" = bench ] && [ -n "${TRACE_DIR:-}" ]; then
   compose="$compose -f compose.redis-profiler.yaml"

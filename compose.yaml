@@ -2,34 +2,29 @@ services:
   node-1:
     build: .
     command: ["__node", "6379", "node-1"]
-    environment: ["EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports:
       - "6379:6379"
 
   node-2:
     build: .
     command: ["__node", "6379", "node-2"]
-    environment: ["EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports:
       - "6380:6379"
 
   node-3:
     build: .
     command: ["__node", "6379", "node-3"]
-    environment: ["EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports:
       - "6381:6379"
 
   node-4:
     build: .
     command: ["__node", "6379", "node-4"]
-    environment: ["EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports:
       - "6382:6379"
 
   node-5:
     build: .
     command: ["__node", "6379", "node-5"]
-    environment: ["EMBERDB_PERSISTENCE=${EMBERDB_PERSISTENCE:-1}"]
     ports:
       - "6383:6379"
