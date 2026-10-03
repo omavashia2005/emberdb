@@ -1,10 +1,12 @@
-package resp
+package resp_test
 
 import (
 	"bufio"
 	"bytes"
-	"math"
+	"io"
 	"testing"
+
+	"github.com/Fusl/go-resp"
 )
 
 //https://github.com/redis/redis/blob/cb2782c314f0af3df56853974f7ba5541c095eeb/src/sds.c#L932-L1040
@@ -117,6 +119,19 @@ import (
 //    *argc = 0;
 //    return NULL;
 //}
+
+// The reference parser keeps Redis's original whitespace and hex rules.
+var readArgsSpaceChars = [256]uint8{' ': 1, '\r': 1, '\n': 2, '\v': 3, '\f': 3, '\t': 1, '\x00': 1}
+
+func hexDigitToInt(c byte) int {
+	if c >= '0' && c <= '9' {
+		return int(c - '0')
+	}
+	if c >= 'a' && c <= 'f' {
+		return int(c-'a') + 10
+	}
+	return int(c-'A') + 10
+}
 
 func isHexDigit(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
@@ -246,12 +261,13 @@ err:
 func TestSplitArgs(t *testing.T) {
 	buf := bytes.NewBuffer(nil)
 	bufRd := bufio.NewReader(buf)
-	server := &Server{
-		rd:                 bufRd,
-		maxMultiBulkLength: math.MaxInt64,
-		maxBulkLength:      1024,
-		maxBufferSize:      1048576,
-	}
+	server := resp.NewServer(&Conn{r: bufRd, w: io.Discard})
+	server.SetOptions(resp.ServerOptions{
+		MaxBulkLength: resp.Pointer(1024),
+		MaxBufferSize: resp.Pointer(1048576),
+	})
+
+	defer server.Close()
 
 	for stringData := range parserTestCases {
 		data := []byte(stringData)
@@ -262,13 +278,16 @@ func TestSplitArgs(t *testing.T) {
 				part = part[:1024]
 			}
 			originalResult := sdssplitargs(part)
-			server.rerr = nil
-			server.werr = nil
 			buf.Reset()
+			// Force the inline parser and keep empty input observable through Next.
+			buf.WriteString("sentinel ")
 			buf.Write(part)
 			buf.WriteByte('\n')
-			bufRd.Reset(buf)
-			ourResult, err := server.readArgs()
+			server.ResetReader(buf)
+			ourResult, err := server.Next()
+			if err == nil {
+				ourResult = ourResult[1:]
+			}
 
 			if (originalResult == nil && err == nil) || (originalResult != nil && err != nil) {
 				t.Fatalf("data %q, expected %q(%t), got %q(%t)", part, originalResult, originalResult == nil, ourResult, ourResult == nil)
@@ -295,12 +314,13 @@ func FuzzSplitArgs(f *testing.F) {
 
 	buf := bytes.NewBuffer(nil)
 	bufRd := bufio.NewReader(buf)
-	server := &Server{
-		rd:                 bufRd,
-		maxMultiBulkLength: math.MaxInt64,
-		maxBulkLength:      1024,
-		maxBufferSize:      1048576,
-	}
+	server := resp.NewServer(&Conn{r: bufRd, w: io.Discard})
+	server.SetOptions(resp.ServerOptions{
+		MaxBulkLength: resp.Pointer(1024),
+		MaxBufferSize: resp.Pointer(1048576),
+	})
+
+	f.Cleanup(func() { server.Close() })
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		parts := bytes.Split(data, []byte("\n"))
@@ -310,13 +330,16 @@ func FuzzSplitArgs(f *testing.F) {
 				part = part[:1024]
 			}
 			originalResult := sdssplitargs(part)
-			server.rerr = nil
-			server.werr = nil
 			buf.Reset()
+			// Force the inline parser and keep empty input observable through Next.
+			buf.WriteString("sentinel ")
 			buf.Write(part)
 			buf.WriteByte('\n')
-			bufRd.Reset(buf)
-			ourResult, err := server.readArgs()
+			server.ResetReader(buf)
+			ourResult, err := server.Next()
+			if err == nil {
+				ourResult = ourResult[1:]
+			}
 
 			if (originalResult == nil && err == nil) || (originalResult != nil && err != nil) {
 				t.Fatalf("data %q, expected %q(%t), got %q(%v)", part, originalResult, originalResult == nil, ourResult, err)

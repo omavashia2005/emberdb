@@ -1,14 +1,16 @@
-package doublebuffer
+package doublebuffer_test
 
 import (
 	"bytes"
 	"io"
 	"testing"
+
+	"github.com/Fusl/go-resp/doublebuffer"
 )
 
 func TestDoubleBufferSmallWrites(t *testing.T) {
 	buf := &bytes.Buffer{}
-	db := NewWriterSize(buf, 1024)
+	db := doublebuffer.NewWriterSize(buf, 1024)
 
 	data := []byte("Hello, World!")
 	n, err := db.Write(data)
@@ -30,7 +32,7 @@ func TestDoubleBufferSmallWrites(t *testing.T) {
 
 func TestDoubleBufferLargeWrites(t *testing.T) {
 	buf := &bytes.Buffer{}
-	db := NewWriterSize(buf, 16)
+	db := doublebuffer.NewWriterSize(buf, 16)
 
 	data := bytes.Repeat([]byte("abcdefghijklmnop"), 4)
 	n, err := db.Write(data)
@@ -52,7 +54,7 @@ func TestDoubleBufferLargeWrites(t *testing.T) {
 
 func TestDoubleBufferReset(t *testing.T) {
 	buf1 := &bytes.Buffer{}
-	db := NewWriterSize(buf1, 1024)
+	db := doublebuffer.NewWriterSize(buf1, 1024)
 
 	data1 := []byte("First write")
 	_, err := db.Write(data1)
@@ -82,7 +84,7 @@ func TestDoubleBufferReset(t *testing.T) {
 }
 
 func TestDoubleBufferClose(t *testing.T) {
-	db := NewWriterSize(io.Discard, 1024)
+	db := doublebuffer.NewWriterSize(io.Discard, 1024)
 
 	data := []byte("Test data")
 	_, err := db.Write(data)
@@ -103,15 +105,15 @@ func TestDoubleBufferClose(t *testing.T) {
 
 func TestWriteStats(t *testing.T) {
 	t.Setenv("EMBERDB_RESP_WRITE_PROFILE", "1")
-	before := Snapshot()
-	db := NewWriterSize(io.Discard, 16)
+	before := doublebuffer.Snapshot()
+	db := doublebuffer.NewWriterSize(io.Discard, 16)
 	if n, err := db.Write(bytes.Repeat([]byte("x"), 64)); n != 64 || err != nil {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	after := Snapshot()
+	after := doublebuffer.Snapshot()
 	if after.LogicalWrites-before.LogicalWrites != 1 || after.LogicalBytes-before.LogicalBytes != 64 ||
 		after.Flushes-before.Flushes != 4 || after.FlushBytes-before.FlushBytes != 64 ||
 		after.SocketWrites-before.SocketWrites != 4 || after.SocketBytes-before.SocketBytes != 64 ||
@@ -121,7 +123,7 @@ func TestWriteStats(t *testing.T) {
 }
 
 func BenchmarkDoubleBufferSmallWrites(b *testing.B) {
-	db := NewWriterSize(io.Discard, 1024)
+	db := doublebuffer.NewWriterSize(io.Discard, 1024)
 	defer db.Close()
 
 	data := []byte("Hello, World!")
@@ -133,7 +135,7 @@ func BenchmarkDoubleBufferSmallWrites(b *testing.B) {
 }
 
 func BenchmarkDoubleBufferLargeWrites(b *testing.B) {
-	db := NewWriterSize(io.Discard, 1024)
+	db := doublebuffer.NewWriterSize(io.Discard, 1024)
 	defer db.Close()
 
 	data := bytes.Repeat([]byte("abcdefghijklmnop"), 64)

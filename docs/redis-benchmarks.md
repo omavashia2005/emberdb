@@ -15,7 +15,7 @@ Run `./scripts/profile-bench.sh` to capture one 5-second `.trace` per product, c
 
 Each measured case runs 5 repeats of 20,000 requests (100,000 measured requests per case). Set `REQUESTS` to change the per-repeat count for `make bench` or `./scripts/profile-bench.sh`, for example `REQUESTS=10000 make bench`. Profiling sends additional requests during each 5-second capture.
 
-The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons. Both benchmark clusters keep AOF appends and once-per-second fsync enabled by default, while automatic snapshots and AOF rewrites are disabled so full-dataset maintenance cannot pause measured commands. Set `EMBERDB_PERSISTENCE=0` before `make bench`, `make test-cluster`, or `./scripts/profile-bench.sh` to disable data persistence in both EmberDB and Redis. Redis still writes its required cluster topology file. Manual EmberDB persistence commands return an error when disabled.
+The profiling run uses an instrumented Redis image to collect CPU samples; use a regular `make bench` run for throughput comparisons. Both benchmark clusters use memory only for data. Redis still writes its required cluster topology file.
 
 ## What it measures
 
@@ -38,7 +38,7 @@ Cluster mode routes with real `CLUSTER SLOTS` discovery, exactly like a producti
 make test-cluster
 ```
 
-This creates both three-node Docker clusters and runs the Redis-mapped SET/GET, same-slot MSET/MGET, and topology checks in `integration/cluster_test.go`. Ordinary `go test ./...` skips this integration test when the Docker addresses are absent.
+This creates both three-node Docker clusters and runs the Redis-mapped SET/GET, same-slot MSET/MGET, and topology checks in `tests/integration/cluster_test.go`. Ordinary `make test` skips this integration test when the Docker addresses are absent.
 
 ## Relevant benchmarks intentionally not implemented
 
@@ -55,5 +55,5 @@ These remain inventory only, as requested in `NEW-FEATURES.md`.
 
 ## Redis incompatibilities exposed by mapped tests
 
-- MGET encodes a missing element as the literal string `(nil)` instead of a RESP null. The source-linked regression remains skipped in `cmd/ember-server/main_test.go`.
-- DECRBY with the minimum signed integer wraps during negation instead of returning Redis's overflow error. The source-linked regression remains skipped in `utils/kvstore/kvstore_test.go`.
+- MGET encodes a missing element as the literal string `(nil)` instead of a RESP null. The source-linked regression remains skipped under `tests/`.
+- DECRBY with the minimum signed integer wraps during negation instead of returning Redis's overflow error. The source-linked regression remains skipped under `tests/`.

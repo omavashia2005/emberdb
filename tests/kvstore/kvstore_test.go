@@ -1,8 +1,10 @@
-package kvstore
+package kvstore_test
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/omavashia2005/emberdb/utils/kvstore"
 )
 
 // Redis mappings:
@@ -20,7 +22,7 @@ func TestSetGetVariants(t *testing.T) {
 	}
 	for name, value := range tests {
 		t.Run(name, func(t *testing.T) {
-			kv := NewKVStore()
+			kv := kvstore.NewKVStore()
 			kv.Set("x", value)
 			if got := kv.Get("x"); got != value {
 				t.Fatalf("Get() length = %d, want %d", len(got), len(value))
@@ -33,7 +35,7 @@ func TestSetGetVariants(t *testing.T) {
 // Relevant because Delete must remove the requested key and report one deletion.
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/keyspace.tcl#L2-L7
 func TestDeleteSingleString(t *testing.T) {
-	kv := NewKVStore()
+	kv := kvstore.NewKVStore()
 	kv.Set("x", "foo")
 
 	if got := kv.Delete("x"); got != 1 {
@@ -44,11 +46,21 @@ func TestDeleteSingleString(t *testing.T) {
 	}
 }
 
+func TestMset(t *testing.T) {
+	for _, clustered := range []bool{false, true} {
+		kv := kvstore.NewKVStore(clustered)
+		kv.Mset([]string{"{batch}a", "{batch}b", "{batch}a"}, []string{"first", "second", "last"})
+		if a, b := kv.Get("{batch}a"), kv.Get("{batch}b"); a != "last" || b != "second" {
+			t.Fatalf("clustered=%v: Mset values = %q, %q", clustered, a, b)
+		}
+	}
+}
+
 // Redis mapping: "APPEND modifies the encoding from int to raw".
 // Relevant because EmberDB stores numeric-looking values as strings and must append bytes, not add numbers.
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/string.tcl#L862-L875
 func TestAppendToNumericString(t *testing.T) {
-	kv := NewKVStore()
+	kv := kvstore.NewKVStore()
 	kv.Set("foo", "1")
 	if err := kv.Append("foo", "2"); err != nil {
 		t.Fatal(err)
@@ -64,7 +76,7 @@ func TestAppendToNumericString(t *testing.T) {
 //   - "DECR against key created by incr" and "DECR against key is not exist and incr": decrement uses the same missing-key rule.
 //     Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/incr.tcl#L12-L20
 func TestIncrementAndDecrementMissingKeys(t *testing.T) {
-	kv := NewKVStore()
+	kv := kvstore.NewKVStore()
 	if err := kv.Incr("counter"); err != nil || kv.Get("counter") != "1" {
 		t.Fatalf("first Incr: value=%q err=%v", kv.Get("counter"), err)
 	}
@@ -87,7 +99,7 @@ func TestIncrementAndDecrementMissingKeys(t *testing.T) {
 //   - "DECRBY over 32bit value with over 32bit increment, negative res": subtraction may cross zero.
 //     Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/incr.tcl#L68-L71
 func TestIntegerOperationsOver32Bits(t *testing.T) {
-	kv := NewKVStore()
+	kv := kvstore.NewKVStore()
 	kv.Set("incr", "17179869184")
 	if err := kv.Incr("incr"); err != nil || kv.Get("incr") != "17179869185" {
 		t.Fatalf("Incr: value=%q err=%v", kv.Get("incr"), err)
@@ -107,7 +119,7 @@ func TestIntegerOperationsOver32Bits(t *testing.T) {
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/incr.tcl#L37-L53
 func TestIncrementRejectsWhitespace(t *testing.T) {
 	for _, value := range []string{"    11", "11    ", "    11    "} {
-		kv := NewKVStore()
+		kv := kvstore.NewKVStore()
 		kv.Set("counter", value)
 		if err := kv.Incr("counter"); err == nil {
 			t.Fatalf("Incr(%q) succeeded", value)

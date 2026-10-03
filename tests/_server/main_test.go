@@ -3,10 +3,10 @@ package server
 import (
 	"fmt"
 	"net"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bytechan/resp3"
 	"github.com/omavashia2005/emberdb/utils/clusters"
@@ -22,6 +22,7 @@ func startClusterCommandServer(tb testing.TB, state *clusters.ClusterState) *com
 	tb.Helper()
 	serverState = state
 	clientConn, serverConn := net.Pipe()
+	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -39,6 +40,7 @@ func startCommandServer(tb testing.TB) *commandServer {
 	tb.Helper()
 	kv := kvstore.NewKVStore()
 	clientConn, serverConn := net.Pipe()
+	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -80,32 +82,8 @@ func (s *commandServer) run(tb testing.TB, payload []byte) any {
 	return value.SmartResult()
 }
 
-func TestDisabledPersistenceCommands(t *testing.T) {
-	t.Setenv("EMBERDB_PERSISTENCE", "0")
-	kv, err := kvstore.OpenPersistent(filepath.Join(t.TempDir(), "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, server := net.Pipe()
-	go handleConnection(server, kv, false)
-	defer client.Close()
-	reader := resp3.NewReader(client)
-	for _, name := range []string{"SAVE", "BGSAVE", "BGREWRITEAOF"} {
-		if _, err := client.Write(command(name)); err != nil {
-			t.Fatal(err)
-		}
-		value, _, err := reader.ReadValue()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if value.Err == "" {
-			t.Fatalf("%s succeeded with persistence disabled", name)
-		}
-	}
-}
-
 // Redis mapping: "MSET base case".
-// Relevant because EmberDB implements MSET/MGET in the command handler rather than KVStore methods.
+// Relevant because MSET must preserve all key/value pairs through the command handler.
 // Source: https://github.com/redis/redis/blob/20bb2cfc54aa08c8fdfb8c4c0a8b8258e811711e/tests/unit/type/string.tcl#L227-L230
 func TestMSetMGet(t *testing.T) {
 	server := startCommandServer(t)
@@ -115,6 +93,9 @@ func TestMSetMGet(t *testing.T) {
 	got := fmt.Sprint(server.run(t, command("MGET", "x", "y", "z")))
 	if want := "[10 foo bar x x\n\r\n]"; got != want {
 		t.Fatalf("MGET = %q, want %q", got, want)
+	}
+	if got := fmt.Sprint(server.run(t, command("MGET", ""))); got != "[(nil)]" {
+		t.Fatalf("MSET created an empty key: %q", got)
 	}
 }
 
@@ -143,6 +124,7 @@ func TestConcurrentConnections(t *testing.T) {
 	errs := make(chan error, 50)
 	for range 50 {
 		clientConn, serverConn := net.Pipe()
+		clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 		servers.Add(1)
 		go func() {
 			defer servers.Done()
@@ -206,5 +188,30 @@ func TestClusterSlotsAndMovedAddress(t *testing.T) {
 	wantMoved := fmt.Sprintf("MOVED %d ember-2:6379", kvstore.SlotForKey(key))
 	if got := server.run(t, command("GET", key)); got != wantMoved {
 		t.Fatalf("GET redirect = %q, want %q", got, wantMoved)
+	}
+}
+
+func TestCommandErrorsKeepConnectionOpen(t *testing.T) {
+	for _, args := range [][]string{
+		{"SAVE"}, {"BGSAVE"}, {"BGREWRITEAOF"}, {"UNKNOWN"},
+		{"SET"}, {"LPUSH"}, {"HSET"}, {"SADD"}, {"ZADD"},
+		{"LRANGE", "list", "invalid", "-1"},
+	} {
+		t.Run(args[0]+fmt.Sprint(args[1:]), func(t *testing.T) {
+			server := startCommandServer(t)
+			if _, err := server.conn.Write(command(args...)); err != nil {
+				t.Fatal(err)
+			}
+			value, _, err := server.reader.ReadValue()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.Err == "" {
+				t.Fatalf("%v returned success: %#v", args, value.SmartResult())
+			}
+			if got := server.run(t, command("PING")); got != "PONG" {
+				t.Fatalf("PING after %v = %#v", args, got)
+			}
+		})
 	}
 }
