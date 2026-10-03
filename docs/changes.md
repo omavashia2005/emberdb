@@ -2,8 +2,8 @@
 
 ## Features
 
-- Data types: added Radish-compatible list, hash, set, and sorted-set storage and commands. Standalone mode uses per-type maps; cluster mode uses tagged values per hash slot. (`utils/kvstore/kvstore.go:15-753`, `cmd/ember-server/main.go:120-378`)
-- Unsubscribe: added connection-scoped channel removal and cleanup. (`utils/pubsub/pubsub.go:7-95`, `cmd/ember-server/main.go:607-659`)
+- Data types: added Radish-compatible list, hash, set, and sorted-set storage and commands. Standalone mode uses per-type maps; cluster mode uses tagged values per hash slot. Storage methods and command handlers now live in datatype files under `utils/kvstore/` and `cmd/ember-server/`, with command dispatch through a handler map.
+- Unsubscribe: added connection-scoped channel removal and cleanup. (`utils/pubsub/pubsub.go`, `cmd/ember-server/pubsub.go`)
 - Storage: removed disk recovery, journaling, snapshots, maintenance, and persistence commands. All server data lives in memory.
 
 ## Tests and benchmarks
