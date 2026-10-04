@@ -261,6 +261,31 @@ func (kv *KVStore) GetString(key string) (string, bool) {
 	return value, ok
 }
 
+func (kv *KVStore) Set(key, value string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.clusterEnabled {
+		kv.setValue(key, Value{Type: StringType, String: value})
+		return
+	}
+	kv.Strings[key] = value
+}
+
+func (kv *KVStore) Get(key string) string {
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+	if kv.clusterEnabled {
+		if value, ok := kv.value(key, StringType); ok {
+			return value.String
+		}
+		return "(nil)"
+	}
+	if value, ok := kv.Strings[key]; ok {
+		return value
+	}
+	return "(nil)"
+}
+
 func (kv *KVStore) Delete(key string) int {
 	if kv.clusterEnabled {
 		s := kv.shard(key)

@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/bytechan/resp3"
-	"github.com/omavashia2005/emberdb/utils/kvstore"
 )
 
 // Redis mapping: "It is possible to write and read from the cluster" and
