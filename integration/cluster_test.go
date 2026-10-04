@@ -161,6 +161,38 @@ func TestMGetIsAtomic(t *testing.T) {
 		}
 	}
 }
+
+func TestMSetIsAtomic(t *testing.T) {
+	kv := kvstore.NewKVStore(true)
+	kv.Mset([]string{"{t}a", "{t}b"}, []string{"a", "a"})
+
+	stop := make(chan struct{})
+	go func() {
+		val := "b"
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			kv.Mset([]string{"{t}a", "{t}b"}, []string{val, val})
+			if val == "a" {
+				val = "b"
+			} else {
+				val = "a"
+			}
+		}
+	}()
+	defer close(stop)
+
+	for n := 0; n < 1_000_000; n++ {
+		got := kv.Mget([]string{"{t}a", "{t}b"})
+		if got[0] != got[1] {
+			t.Fatalf("mixed MSET after %d reads: a=%s b=%s", n, got[0], got[1])
+		}
+	}
+}
+
 func run(t *testing.T, addr string, args ...string) any {
 	t.Helper()
 	got, err := runErr(addr, args...)
