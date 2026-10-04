@@ -607,14 +607,12 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				}
 			}
 
-			var resp []string
-
-			for i := 0; i < len(args); i++ {
-				key := string(args[i])
-				resp = append(resp, kv.Get(key))
+			keys := make([]string, len(args))
+			for i := range args {
+				keys[i] = string(args[i])
 			}
 
-			rconn.WriteArrayString(resp)
+			rconn.WriteArrayString(kv.Mget(keys))
 		case "publish":
 			if len(args) != 2 {
 				rconn.WriteError(fmt.Errorf("Wrong number of arguments for 'PUBLISH' command"))
