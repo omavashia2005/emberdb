@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="flameBody" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#d7263d"/>
+      <stop offset="45%" stop-color="#f4661b"/>
+      <stop offset="80%" stop-color="#ffb000"/>
+      <stop offset="100%" stop-color="#ffe36e"/>
+    </linearGradient>
+    <linearGradient id="flameInner" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#ffb000"/>
+      <stop offset="100%" stop-color="#fff3b0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- outer flame body -->
+  <path d="M100 18
+           C62 55, 38 92, 38 128
+           C38 164, 66 188, 100 188
+           C134 188, 162 164, 162 128
+           C162 92, 138 55, 100 18 Z"
+        fill="url(#flameBody)"/>
+
+  <!-- inner flame highlight -->
+  <path d="M100 56
+           C80 82, 66 106, 66 128
+           C66 152, 81 166, 100 166
+           C119 166, 134 152, 134 128
+           C134 106, 120 82, 100 56 Z"
+        fill="url(#flameInner)" opacity="0.85"/>
+
+  <!-- face: friendly eyes -->
+  <circle cx="83" cy="122" r="7" fill="#3a1a12"/>
+  <circle cx="117" cy="122" r="7" fill="#3a1a12"/>
+  <circle cx="85.5" cy="119.5" r="2" fill="#ffffff"/>
+  <circle cx="119.5" cy="119.5" r="2" fill="#ffffff"/>
+
+  <!-- rosy cheeks -->
+  <circle cx="70" cy="138" r="6" fill="#ff7a59" opacity="0.6"/>
+  <circle cx="130" cy="138" r="6" fill="#ff7a59" opacity="0.6"/>
+
+  <!-- smile -->
+  <path d="M86 144 Q100 158 114 144" stroke="#3a1a12" stroke-width="4" fill="none" stroke-linecap="round"/>
+</svg>

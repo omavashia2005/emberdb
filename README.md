@@ -1,21 +1,25 @@
 # EmberDB
 
+<p align="center">
+  <img src="assets/mascot.svg" alt="EmberDB mascot: a friendly little flame" width="160" />
+</p>
+
 EmberDB is a Redis-compatible, in-memory key-value server written in Go. It speaks RESP2 and RESP3, runs standalone or as a sharded cluster, and works with `redis-cli` and standard Redis clients.
 
 ## Features
 
-| Category | Commands | Notes |
-|---|---|---|
-| Strings | `GET`, `SET`, `MGET`, `MSET`, `APPEND`, `INCR`, `INCRBY`, `DECR`, `DECRBY` | |
-| Lists | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN` | |
-| Hashes | `HSET`, `HGET`, `HMSET`, `HMGET`, `HGETALL`, `HDEL` | |
-| Sets | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER` | |
-| Sorted sets | `ZADD`, `ZRANGE`, `ZREM` | |
-| Pub/Sub | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE` | |
-| Key management | `DEL`, `FLUSHALL` | |
-| Connection | `PING`, `ECHO` | |
-| Cluster | `CLUSTER MEET`, `CLUSTER NODES`, `CLUSTER SLOTS`, `CLUSTER ADDSLOTSRANGE`, `CLUSTER MYADDR`, `SETSLOT`, `MIGRATE`, `GETKEYSINSLOT`, `RESTORE-ASKING` | 16,384 hash slots, CRC16 routing, Redis-style `{tag}` hash tags |
-| Protocol | RESP2, RESP3 | |
+| Category | Commands |
+|---|---|
+| Strings | `GET`, `SET`, `MGET`, `MSET`, `APPEND`, `INCR`, `INCRBY`, `DECR`, `DECRBY` |
+| Lists | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN` |
+| Hashes | `HSET`, `HGET`, `HMSET`, `HMGET`, `HGETALL`, `HDEL` |
+| Sets | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER` |
+| Sorted sets | `ZADD`, `ZRANGE`, `ZREM` |
+| Pub/Sub | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE` |
+| Key management | `DEL`, `FLUSHALL` |
+| Connection | `PING`, `ECHO` |
+| Cluster | `CLUSTER MEET`, `CLUSTER NODES`, `CLUSTER SLOTS`, `CLUSTER ADDSLOTSRANGE`, `CLUSTER MYADDR`, `SETSLOT`, `MIGRATE`, `GETKEYSINSLOT`, `RESTORE-ASKING` (16,384 hash slots, CRC16 routing, Redis-style `{tag}` hash tags) |
+| Protocol | RESP2, RESP3 |
 
 ### Not yet implemented
 
@@ -54,8 +58,6 @@ OK
 1) "name"
 2) "Ember"
 ```
-
-The interactive launcher works too. Run `go run .`, then type `ember start` at its prompt.
 
 ## Running a cluster without Docker
 
