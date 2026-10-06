@@ -120,9 +120,6 @@ func (kv *KVStore) Set(key, value string) {
 	kv.mu.Unlock()
 }
 
-// Mset writes all pairs atomically. In cluster mode the server rejects
-// cross-slot MSETs, so this is normally one slot and one lock; if keys do span
-// slots, their locks are taken in ascending slot order to avoid deadlock.
 func (kv *KVStore) Mset(keys, values []string) {
 	if len(keys) == 0 {
 		return
@@ -145,45 +142,20 @@ func (kv *KVStore) Mset(keys, values []string) {
 	kv.mu.Unlock()
 }
 
-// Mget reads all keys under one lock (or one lock per slot, in slot order),
-// so it can't observe a write to one key without the other, unlike looping
-// over GetString/Get. Missing keys or non-string values map to "(nil)".
 func (kv *KVStore) Mget(keys []string) []string {
 	if len(keys) == 0 {
 		return nil
 	}
 	result := make([]string, len(keys))
-	if !kv.clusterEnabled {
-		kv.mu.RLock()
-		for i, k := range keys {
-			if v, ok := kv.Strings[k]; ok {
-				result[i] = v
-			} else {
-				result[i] = "(nil)"
+	if kv.clusterEnabled {
+		get := func(s *clusterSlotShard, k string) string {
+			if v, ok := s.m[k]; ok && v.Type == StringType {
+				return v.String
 			}
+			return "(nil)"
 		}
-		kv.mu.RUnlock()
-		return result
-	}
 
-	get := func(s *clusterSlotShard, k string) string {
-		if v, ok := s.m[k]; ok && v.Type == StringType {
-			return v.String
-		}
-		return "(nil)"
-	}
-
-	slotIDs := make([]uint16, len(keys))
-	single := true
-	for i, k := range keys {
-		slotIDs[i] = SlotForKey(k)
-		if slotIDs[i] != slotIDs[0] {
-			single = false
-		}
-	}
-
-	if single {
-		s := &kv.slots[slotIDs[0]]
+		s := &kv.slots[SlotForKey(keys[0])]
 		s.mu.RLock()
 		for i, k := range keys {
 			result[i] = get(s, k)
@@ -192,19 +164,17 @@ func (kv *KVStore) Mget(keys []string) []string {
 		return result
 	}
 
-	order := slices.Clone(slotIDs)
-	slices.Sort(order)
-	order = slices.Compact(order)
-	for _, id := range order {
-		kv.slots[id].mu.RLock()
-	}
+	kv.mu.RLock()
 	for i, k := range keys {
-		result[i] = get(&kv.slots[slotIDs[i]], k)
+		if v, ok := kv.Strings[k]; ok {
+			result[i] = v
+		} else {
+			result[i] = "(nil)"
+		}
 	}
-	for _, id := range order {
-		kv.slots[id].mu.RUnlock()
-	}
+	kv.mu.RUnlock()
 	return result
+
 }
 
 func (kv *KVStore) Get(key string) string {
