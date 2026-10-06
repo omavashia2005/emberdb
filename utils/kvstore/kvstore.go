@@ -127,26 +127,8 @@ func (kv *KVStore) Mset(keys, values []string) {
 	if len(keys) == 0 {
 		return
 	}
-	if !kv.clusterEnabled {
-		kv.mu.Lock()
-		for i, k := range keys {
-			kv.Strings[k] = values[i]
-		}
-		kv.mu.Unlock()
-		return
-	}
-
-	slotIDs := make([]uint16, len(keys))
-	single := true
-	for i, k := range keys {
-		slotIDs[i] = SlotForKey(k)
-		if slotIDs[i] != slotIDs[0] {
-			single = false
-		}
-	}
-
-	if single {
-		s := &kv.slots[slotIDs[0]]
+	if kv.clusterEnabled {
+		s := &kv.slots[SlotForKey(keys[0])]
 		s.mu.Lock()
 		s.ensure()
 		for i, k := range keys {
@@ -156,20 +138,11 @@ func (kv *KVStore) Mset(keys, values []string) {
 		return
 	}
 
-	order := slices.Clone(slotIDs)
-	slices.Sort(order)
-	order = slices.Compact(order)
-	for _, id := range order {
-		kv.slots[id].mu.Lock()
-	}
+	kv.mu.Lock()
 	for i, k := range keys {
-		s := &kv.slots[slotIDs[i]]
-		s.ensure()
-		s.m[k] = Value{Type: StringType, String: values[i]}
+		kv.Strings[k] = values[i]
 	}
-	for _, id := range order {
-		kv.slots[id].mu.Unlock()
-	}
+	kv.mu.Unlock()
 }
 
 // Mget reads all keys under one lock (or one lock per slot, in slot order),
