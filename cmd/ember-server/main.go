@@ -132,7 +132,6 @@ func handleConnection(conn net.Conn, kv *kvstore.KVStore, clusterEnabled bool) {
 				continue
 			}
 			if len(args) == 1 {
-				// Write a bulk string response
 				rconn.WriteBytes(args[0])
 				continue
 			}
